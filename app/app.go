@@ -108,6 +108,13 @@ type home struct {
 	textOverlay *overlay.TextOverlay
 	// confirmationOverlay displays confirmation modals
 	confirmationOverlay *overlay.ConfirmationOverlay
+
+	// lastReconcileTime tracks the wall-clock time of the last reconciliation
+	// tick so we can detect wake-from-sleep gaps.
+	lastReconcileTime time.Time
+
+	// lastOutputChange tracks the last time each instance's tmux output changed (for stall detection)
+	lastOutputChange map[string]time.Time
 }
 
 func newHome(ctx context.Context, program string, autoYes bool) *home {
@@ -142,7 +149,9 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 		autoYes:         autoYes,
 		state:           stateDefault,
 		appState:        appState,
-		conductorConfig: conductorCfg,
+		conductorConfig:   conductorCfg,
+		lastReconcileTime: time.Now(),
+		lastOutputChange:  make(map[string]time.Time),
 	}
 	h.list = ui.NewList(&h.spinner, autoYes)
 
@@ -204,6 +213,7 @@ func (m *home) Init() tea.Cmd {
 			return previewTickMsg{}
 		},
 		tickUpdateMetadataCmd(m.snapshotActiveInstances()),
+		reconcileTickCmd(),
 	)
 }
 
@@ -250,10 +260,18 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
+	case reconcileTickMsg:
+		if m.conductorConfig != nil {
+			go m.runReconciliation()
+		}
+		return m, reconcileTickCmd()
 	case metadataUpdateDoneMsg:
 		for _, r := range msg.results {
 			if r.updated {
 				r.instance.SetStatus(session.Running)
+				if r.instance.Account != "" {
+					m.lastOutputChange[r.instance.Title] = time.Now()
+				}
 			} else if r.hasPrompt {
 				r.instance.TapEnter()
 			} else {
@@ -397,6 +415,11 @@ func (m *home) updateRegistry() {
 			status = "running"
 		}
 
+		lastOutput := orchestration.NowISO()
+		if t, ok := m.lastOutputChange[inst.Title]; ok {
+			lastOutput = t.UTC().Format(time.RFC3339)
+		}
+
 		entries[inst.Title] = orchestration.RegistryEntry{
 			Account:      inst.Account,
 			Role:         inst.Role,
@@ -405,7 +428,7 @@ func (m *home) updateRegistry() {
 			Branch:       inst.Branch,
 			Status:       status,
 			CreatedAt:    inst.CreatedAt.Format(time.RFC3339),
-			LastOutputAt: inst.UpdatedAt.Format(time.RFC3339),
+			LastOutputAt: lastOutput,
 		}
 	}
 
@@ -418,6 +441,47 @@ func (m *home) updateRegistry() {
 	if err := orchestration.AtomicWriteJSON(registryPath, registry); err != nil {
 		log.ErrorLog.Printf("updateRegistry: failed to write registry.json: %v", err)
 	}
+}
+
+// runReconciliation performs a background reconciliation pass, checking tmux
+// sessions against the registry and detecting wake-from-sleep gaps.
+func (m *home) runReconciliation() {
+	base, err := accounts.ConductorDir()
+	if err != nil {
+		log.ErrorLog.Printf("reconciliation: failed to get conductor dir: %v", err)
+		return
+	}
+
+	store, err := orchestration.NewTaskStore()
+	if err != nil {
+		log.ErrorLog.Printf("reconciliation: failed to create task store: %v", err)
+		return
+	}
+
+	regPath := filepath.Join(base, "registry.json")
+	result, err := orchestration.Reconcile(orchestration.RealTmuxChecker{}, regPath, store)
+	if err != nil {
+		log.ErrorLog.Printf("reconciliation: %v", err)
+		return
+	}
+
+	if len(result.DeadSessions) > 0 {
+		log.InfoLog.Printf("reconciliation: detected dead sessions: %v", result.DeadSessions)
+	}
+	if len(result.FailedTasks) > 0 {
+		log.InfoLog.Printf("reconciliation: promoted stale tasks to failed: %v", result.FailedTasks)
+	}
+	if len(result.StatusCorrected) > 0 {
+		log.InfoLog.Printf("reconciliation: corrected status files: %v", result.StatusCorrected)
+	}
+
+	// Detect wake from sleep (tick gap > 30 seconds)
+	if time.Since(m.lastReconcileTime) > 30*time.Second {
+		log.InfoLog.Printf("reconciliation: detected wake from sleep (gap: %v)", time.Since(m.lastReconcileTime))
+		// Wake handling is logged but no automatic recovery
+		// (sending keystrokes to sessions in unknown state is dangerous)
+	}
+	m.lastReconcileTime = time.Now()
 }
 
 func (m *home) handleMenuHighlighting(msg tea.KeyMsg) (cmd tea.Cmd, returnEarly bool) {
@@ -995,6 +1059,16 @@ type hideErrMsg struct{}
 
 // previewTickMsg implements tea.Msg and triggers a preview update
 type previewTickMsg struct{}
+
+// reconcileTickMsg triggers a periodic reconciliation pass.
+type reconcileTickMsg struct{}
+
+// reconcileTickCmd returns a Cmd that fires reconcileTickMsg every 5 seconds.
+func reconcileTickCmd() tea.Cmd {
+	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
+		return reconcileTickMsg{}
+	})
+}
 
 type instanceChangedMsg struct{}
 
