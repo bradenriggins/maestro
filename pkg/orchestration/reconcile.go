@@ -41,8 +41,8 @@ func Reconcile(tmux TmuxChecker, registryPath string, store *TaskStore) (*Reconc
 		tmuxAlive := tmux.HasSession(entry.TmuxSession)
 
 		// 1. Detect dead sessions
-		if !tmuxAlive && entry.Status == "running" {
-			entry.Status = "dead"
+		if !tmuxAlive && entry.Status == RegistryStatusRunning {
+			entry.Status = RegistryStatusDead
 			now := NowISO()
 			entry.DiedAt = &now
 			reg.Instances[name] = entry
@@ -57,7 +57,9 @@ func Reconcile(tmux TmuxChecker, registryPath string, store *TaskStore) (*Reconc
 						task.UpdatedAt = NowISO()
 						errMsg := "Worker tmux session died during execution"
 						task.Error = &errMsg
-						store.Update(task)
+						if err := store.Update(task); err != nil {
+							continue
+						}
 						result.StaleTasks = append(result.StaleTasks, task.ID)
 					}
 				}
@@ -93,7 +95,9 @@ func Reconcile(tmux TmuxChecker, registryPath string, store *TaskStore) (*Reconc
 					updatedAt, parseErr := time.Parse(time.RFC3339, task.UpdatedAt)
 					if parseErr == nil && time.Since(updatedAt) > 30*time.Second {
 						task.Status = StatusFailed
-						store.Update(task)
+						if err := store.Update(task); err != nil {
+							continue
+						}
 						result.FailedTasks = append(result.FailedTasks, task.ID)
 					}
 				}

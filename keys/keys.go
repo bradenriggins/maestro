@@ -13,8 +13,6 @@ const (
 	KeyNew
 	KeyKill
 	KeyQuit
-	KeyReview
-	KeyPush
 	KeySubmit
 
 	KeyTab        // Tab is a special keybinding for switching between panes.
@@ -35,6 +33,7 @@ const (
 	KeyLogViewer     // l key — log viewer
 	KeyPreviewToggle // f key — toggle preview mode
 	KeyDiff          // d key — show diff
+	KeyHistory       // h key — task history
 )
 
 // GlobalKeyStringsMap is a global, immutable map string to keybinding.
@@ -60,6 +59,7 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"l":          KeyLogViewer,
 	"f":          KeyPreviewToggle,
 	"d":          KeyDiff,
+	"h":          KeyHistory,
 }
 
 // GlobalkeyBindings is a global, immutable map of KeyName tot keybinding.
@@ -142,6 +142,10 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	KeyDiff: key.NewBinding(
 		key.WithKeys("d"),
 		key.WithHelp("d", "diff"),
+	),
+	KeyHistory: key.NewBinding(
+		key.WithKeys("h"),
+		key.WithHelp("h", "history"),
 	),
 
 	// -- Special keybindings --

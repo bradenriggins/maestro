@@ -41,7 +41,7 @@ func (r *Registry) GetInstance(name string) (*RegistryEntry, bool) {
 func (r *Registry) ListWorkers() map[string]RegistryEntry {
 	workers := make(map[string]RegistryEntry)
 	for name, entry := range r.Instances {
-		if entry.Role == "worker" {
+		if entry.Role == string(accounts.RoleWorker) {
 			workers[name] = entry
 		}
 	}

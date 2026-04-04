@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -23,6 +24,10 @@ func NewErrBox() *ErrBox {
 
 func (e *ErrBox) SetError(err error) {
 	e.err = err
+}
+
+func (e *ErrBox) SetMessage(msg string) {
+	e.err = errors.New(msg)
 }
 
 func (e *ErrBox) Clear() {

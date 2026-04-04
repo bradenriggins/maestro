@@ -9,6 +9,7 @@ import (
 	"claude-conductor/pkg/orchestration"
 	"claude-conductor/session"
 	"claude-conductor/session/git"
+	"claude-conductor/session/tmux"
 	"claude-conductor/ui"
 	"claude-conductor/ui/overlay"
 	"context"
@@ -557,13 +558,13 @@ func (m *home) updateRegistry() {
 		var status string
 		switch inst.Status {
 		case session.Paused:
-			status = "paused"
+			status = orchestration.RegistryStatusPaused
 		case session.Loading:
-			status = "starting"
+			status = orchestration.RegistryStatusStarting
 		case session.Ready, session.Running:
-			status = "running"
+			status = orchestration.RegistryStatusRunning
 		default:
-			status = "running"
+			status = orchestration.RegistryStatusRunning
 		}
 
 		lastOutput := orchestration.NowISO()
@@ -574,7 +575,7 @@ func (m *home) updateRegistry() {
 		entries[inst.Title] = orchestration.RegistryEntry{
 			Account:      inst.Account,
 			Role:         inst.Role,
-			TmuxSession:  "claudeconductor_" + inst.Title,
+			TmuxSession:  tmux.SanitizeTmuxName(inst.Title),
 			WorktreePath: inst.GetWorktreePath(),
 			Branch:       inst.Branch,
 			Status:       status,
@@ -879,14 +880,26 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 					branch := selected.Branch
 					title := selected.Title
 					go func() {
-						cmd := exec.Command("git", "merge", "--no-ff", branch,
+						mergeCmd := exec.Command("git", "merge", "--no-ff", branch,
 							"-m", fmt.Sprintf("conductor: merge %s", title))
-						cmd.Dir = "."
-						cmd.Run()
+						if out, err := mergeCmd.CombinedOutput(); err != nil {
+							log.ErrorLog.Printf("merge failed for %s: %s: %v", branch, string(out), err)
+						}
 					}()
+					m.errBox.SetError(fmt.Errorf("Merged %s", selected.Branch))
 				}
 			case overlay.ReviewEdit:
-				// Could open a prompt overlay to re-dispatch — for now just return to default
+				// Open quick-dispatch to re-dispatch to the same worker
+				selected := m.list.GetSelectedInstance()
+				if selected != nil {
+					workers := []string{selected.Title}
+					m.quickDispatchOverlay = overlay.NewQuickDispatchOverlay(workers)
+					m.quickDispatchOverlay.SetWidth(m.windowWidth)
+					m.state = stateQuickDispatch
+					return m, nil
+				}
+			case overlay.ReviewSkip:
+				// Intentional no-op — return to default state
 			}
 			return m, nil
 		}
@@ -906,7 +919,10 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 				task := m.quickDispatchOverlay.GetTask()
 				// Dispatch in background
 				go func() {
-					orchestration.RunDispatch(worker, task, "")
+					_, err := orchestration.RunDispatch(worker, task, "")
+					if err != nil {
+						log.ErrorLog.Printf("quick dispatch failed: %v", err)
+					}
 				}()
 			}
 			m.quickDispatchOverlay = nil
@@ -1153,7 +1169,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		}
 
 		// If running worker with conductor config, open review overlay
-		if m.conductorConfig != nil && selected.Account != "" && selected.Role == "worker" {
+		if m.conductorConfig != nil && selected.Account != "" && selected.Role == string(accounts.RoleWorker) {
 			m.reviewOverlay = overlay.NewReviewOverlay(selected.Title, selected.Branch, "main")
 			m.reviewOverlay.SetSize(m.windowWidth, 0)
 			m.state = stateReview
@@ -1177,7 +1193,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		// Get worker names from the current instance list
 		var workers []string
 		for _, inst := range m.list.GetInstances() {
-			if inst.Role == "worker" && inst.Status != session.Paused {
+			if inst.Role == string(accounts.RoleWorker) && inst.Status != session.Paused {
 				workers = append(workers, inst.Title)
 			}
 		}
@@ -1192,6 +1208,32 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		} else {
 			m.logViewerOverlay.Toggle()
 			m.state = stateLogViewer
+		}
+		return m, nil
+	case keys.KeyDiff:
+		// Toggle to diff tab in the tabbed window
+		if m.list.GetSelectedInstance() != nil {
+			m.tabbedWindow.SetActiveTab(1) // Diff tab
+			m.menu.SetActiveTab(1)
+		}
+		return m, m.instanceChanged()
+	case keys.KeyPreviewToggle:
+		// Toggle between preview tabs
+		if m.list.GetSelectedInstance() != nil {
+			m.tabbedWindow.Toggle()
+			m.menu.SetActiveTab(m.tabbedWindow.GetActiveTab())
+		}
+		return m, m.instanceChanged()
+	case keys.KeyHistory:
+		// Show tasks overlay (reuse orchestration overlay for now)
+		if m.conductorConfig != nil {
+			if m.orchestrationOverlay.IsVisible() {
+				m.orchestrationOverlay.Close()
+				m.state = stateDefault
+			} else {
+				m.orchestrationOverlay.Toggle()
+				m.state = stateOrchestration
+			}
 		}
 		return m, nil
 	case keys.KeyEnter:
@@ -1487,7 +1529,10 @@ func (m *home) confirmAction(message string, action tea.Cmd) tea.Cmd {
 		m.state = stateDefault
 		// Execute the action if it exists
 		if action != nil {
-			_ = action()
+			msg := action()
+			if err, ok := msg.(error); ok {
+				log.ErrorLog.Printf("action error: %v", err)
+			}
 		}
 	}
 

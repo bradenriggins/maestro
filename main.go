@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -180,7 +181,7 @@ var (
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
-			fmt.Printf("Dispatched task %s to %s\n", result.TaskID, result.InstanceName)
+			fmt.Println(result.TaskID)
 			return nil
 		},
 	}
@@ -250,6 +251,161 @@ var (
 			return nil
 		},
 	}
+
+	doctorCmd = &cobra.Command{
+		Use:   "doctor",
+		Short: "Diagnose and fix state issues",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			fmt.Println("Running diagnostics...")
+
+			// Check config
+			cfg, err := accounts.LoadConductorConfig()
+			if err != nil {
+				fmt.Printf("  ✗ Config: %v\n", err)
+			} else if cfg == nil {
+				fmt.Printf("  ✗ Config: not found (run setup first)\n")
+			} else {
+				fmt.Printf("  ✓ Config: %d accounts configured\n", len(cfg.Accounts))
+			}
+
+			// Check account directories
+			if cfg != nil {
+				for _, acct := range cfg.Accounts {
+					if _, err := os.Stat(acct.ConfigDir); err != nil {
+						fmt.Printf("  ✗ Account %s: config dir missing (%s)\n", acct.Name, acct.ConfigDir)
+					} else {
+						fmt.Printf("  ✓ Account %s: config dir exists\n", acct.Name)
+					}
+				}
+			}
+
+			// Check registry
+			reg, err := orchestration.LoadRegistry()
+			if err != nil {
+				fmt.Printf("  ✗ Registry: %v\n", err)
+			} else {
+				alive := 0
+				dead := 0
+				for _, entry := range reg.Instances {
+					if orchestration.TmuxHasSession(entry.TmuxSession) {
+						alive++
+					} else if entry.Status == orchestration.RegistryStatusRunning {
+						dead++
+					}
+				}
+				fmt.Printf("  ✓ Registry: %d instances (%d alive, %d dead)\n", len(reg.Instances), alive, dead)
+			}
+
+			// Check task files
+			store, err := orchestration.NewTaskStore()
+			if err != nil {
+				fmt.Printf("  ✗ Task store: %v\n", err)
+			} else {
+				tasks, _ := store.List("")
+				stale := 0
+				for _, t := range tasks {
+					if t.Status == orchestration.StatusStale {
+						stale++
+					}
+				}
+				if stale > 0 {
+					fmt.Printf("  ✗ Tasks: %d total, %d stale\n", len(tasks), stale)
+				} else {
+					fmt.Printf("  ✓ Tasks: %d total\n", len(tasks))
+				}
+			}
+
+			// Check permissions
+			base, _ := accounts.ConductorDir()
+			if info, err := os.Stat(base); err == nil {
+				if info.Mode().Perm() != 0700 {
+					fmt.Printf("  ✗ Permissions: %s is %o (should be 0700)\n", base, info.Mode().Perm())
+				} else {
+					fmt.Printf("  ✓ Permissions: correct\n")
+				}
+			}
+
+			fmt.Println("\nDone.")
+			return nil
+		},
+	}
+
+	cleanCmd = &cobra.Command{
+		Use:   "clean",
+		Short: "Clean up old resources",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			base, err := accounts.ConductorDir()
+			if err != nil {
+				return err
+			}
+
+			store, err := orchestration.NewTaskStore()
+			if err != nil {
+				return err
+			}
+
+			// Find old completed/failed tasks
+			tasks, _ := store.List("")
+			oldTasks := 0
+			for _, t := range tasks {
+				if t.IsTerminal() {
+					oldTasks++
+				}
+			}
+
+			// Find capture files
+			capturesDir := filepath.Join(base, "captures")
+			captures, _ := os.ReadDir(capturesDir)
+
+			fmt.Printf("Found:\n")
+			fmt.Printf("  Terminal-state tasks: %d\n", oldTasks)
+			fmt.Printf("  Capture files: %d\n", len(captures))
+
+			if oldTasks == 0 && len(captures) == 0 {
+				fmt.Println("Nothing to clean.")
+				return nil
+			}
+
+			fmt.Print("\nClean up? [y/N]: ")
+			var answer string
+			fmt.Scanln(&answer)
+			if strings.ToLower(strings.TrimSpace(answer)) != "y" {
+				fmt.Println("Cancelled.")
+				return nil
+			}
+
+			// Archive old tasks
+			archiveDir := filepath.Join(base, "archive")
+			os.MkdirAll(archiveDir, 0700)
+			archived := 0
+			for _, t := range tasks {
+				if t.IsTerminal() {
+					// Move task JSON and prompt file to archive
+					taskFile := filepath.Join(base, "tasks", t.ID+".json")
+					promptFile := filepath.Join(base, "tasks", t.ID+".prompt")
+					resultFile := filepath.Join(base, "results", t.ID+".md")
+
+					for _, src := range []string{taskFile, promptFile, resultFile} {
+						if _, err := os.Stat(src); err == nil {
+							dst := filepath.Join(archiveDir, filepath.Base(src))
+							os.Rename(src, dst)
+						}
+					}
+					archived++
+				}
+			}
+
+			// Remove capture files
+			removed := 0
+			for _, entry := range captures {
+				os.Remove(filepath.Join(capturesDir, entry.Name()))
+				removed++
+			}
+
+			fmt.Printf("Archived %d tasks, removed %d capture files.\n", archived, removed)
+			return nil
+		},
+	}
 )
 
 func init() {
@@ -283,6 +439,8 @@ func init() {
 	rootCmd.AddCommand(outputCmd)
 	rootCmd.AddCommand(recallCmd)
 	rootCmd.AddCommand(usageCmd)
+	rootCmd.AddCommand(doctorCmd)
+	rootCmd.AddCommand(cleanCmd)
 }
 
 func main() {

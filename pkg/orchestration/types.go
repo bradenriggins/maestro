@@ -24,6 +24,15 @@ const (
 	StateRateLimited = "rate_limited"
 )
 
+// Registry status constants
+const (
+	RegistryStatusRunning   = "running"
+	RegistryStatusStarting  = "starting"
+	RegistryStatusPaused    = "paused"
+	RegistryStatusDead      = "dead"
+	RegistryStatusCompleted = "completed"
+)
+
 type Task struct {
 	ID             string  `json:"id"`
 	Status         string  `json:"status"`

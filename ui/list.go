@@ -2,6 +2,7 @@ package ui
 
 import (
 	"claude-conductor/log"
+	"claude-conductor/pkg/accounts"
 	"claude-conductor/session"
 	"errors"
 	"fmt"
@@ -147,7 +148,7 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 	var rolePrefix string
 	const rolePrefixPlain = "★ "
 	rolePrefixWidth := 0
-	if i.Role == "orchestrator" {
+	if i.Role == string(accounts.RoleOrchestrator) {
 		rolePrefix = orchStyle.Render("★") + " "
 		rolePrefixWidth = runewidth.StringWidth(rolePrefixPlain)
 	}

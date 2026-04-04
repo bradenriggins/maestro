@@ -158,24 +158,14 @@ func RunSetup() error {
 		return fmt.Errorf("failed to save config: %w", err)
 	}
 
-	// Ensure correct permissions on base dir even if it pre-existed
+	// Create all required conductor directories (tasks, status, results, etc.)
+	if err := EnsureConductorDirs(); err != nil {
+		return fmt.Errorf("failed to create conductor directories: %w", err)
+	}
+
 	base, err := ConductorDir()
 	if err != nil {
 		return err
-	}
-	os.Chmod(base, 0700)
-
-	// Create required directories
-	for _, dir := range []string{"tasks", "status", "results", "logs", "captures", "history", "archive", "bin", "usage"} {
-		if err := os.MkdirAll(filepath.Join(base, dir), 0700); err != nil {
-			return fmt.Errorf("failed to create %s dir: %w", dir, err)
-		}
-	}
-
-	// Create .gitignore
-	gitignorePath := filepath.Join(base, ".gitignore")
-	if err := os.WriteFile(gitignorePath, []byte("*\n"), 0600); err != nil {
-		return fmt.Errorf("failed to create .gitignore: %w", err)
 	}
 
 	// Generate shell script wrappers

@@ -67,6 +67,11 @@ func toClaudeSquadTmuxName(str string) string {
 	return fmt.Sprintf("%s%s", TmuxPrefix, str)
 }
 
+// SanitizeTmuxName applies the same sanitization used for tmux session names.
+func SanitizeTmuxName(name string) string {
+	return toClaudeSquadTmuxName(name)
+}
+
 // NewTmuxSession creates a new TmuxSession with the given name and program.
 func NewTmuxSession(name string, program string) *TmuxSession {
 	return newTmuxSession(name, program, MakePtyFactory(), cmd.MakeExecutor())

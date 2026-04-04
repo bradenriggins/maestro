@@ -103,6 +103,13 @@ func (w *TabbedWindow) Toggle() {
 	w.activeTab = (w.activeTab + 1) % len(w.tabs)
 }
 
+// SetActiveTab sets the active tab index.
+func (w *TabbedWindow) SetActiveTab(tab int) {
+	if tab >= 0 && tab < len(w.tabs) {
+		w.activeTab = tab
+	}
+}
+
 // UpdatePreview updates the content of the preview pane. instance may be nil.
 func (w *TabbedWindow) UpdatePreview(instance *session.Instance) error {
 	if w.activeTab != PreviewTab {

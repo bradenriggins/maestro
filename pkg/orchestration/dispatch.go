@@ -240,6 +240,11 @@ func tmuxHasSession(name string) bool {
 	return cmd.Run() == nil
 }
 
+// TmuxHasSession is the exported version of tmuxHasSession.
+func TmuxHasSession(name string) bool {
+	return tmuxHasSession(name)
+}
+
 // tmuxSendKeys sends text to a tmux session followed by Enter.
 func tmuxSendKeys(session, text string) error {
 	cmd := exec.Command("tmux", "send-keys", "-t", session, "-l", text)
