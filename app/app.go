@@ -67,7 +67,7 @@ type home struct {
 	appState config.AppState
 
 	// conductorConfig is the multi-account conductor configuration.
-	// Nil if no conductor config exists (falls back to claude-squad behavior).
+	// Nil if no conductor config exists (falls back to single-account behavior).
 	conductorConfig *accounts.ConductorConfig
 
 	// -- State --
@@ -828,6 +828,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 
 			// Then kill the instance
 			m.list.Kill()
+			m.updateRegistry()
 			return instanceChangedMsg{}
 		}
 
@@ -868,6 +869,10 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			if err := selected.Pause(); err != nil {
 				m.handleError(err)
 			}
+			if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
+				log.ErrorLog.Printf("failed to save instances after pause: %v", err)
+			}
+			m.updateRegistry()
 			m.tabbedWindow.CleanupTerminalForInstance(selected.Title)
 			m.instanceChanged()
 		})
@@ -880,6 +885,10 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		if err := selected.Resume(); err != nil {
 			return m, m.handleError(err)
 		}
+		if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
+			return m, m.handleError(err)
+		}
+		m.updateRegistry()
 		return m, tea.WindowSize()
 	case keys.KeyEnter:
 		if m.list.NumInstances() == 0 {
@@ -926,7 +935,7 @@ func (m *home) nextAvailableAccount() *accounts.Account {
 		return nil
 	}
 
-	// claude-squad statuses: Running, Ready, Loading, Paused
+	// Instance statuses: Running, Ready, Loading, Paused
 	// Killed instances are removed from the list entirely.
 	activeAccounts := make(map[string]bool)
 	for _, inst := range m.list.GetInstances() {
