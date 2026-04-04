@@ -22,6 +22,8 @@ type InstanceData struct {
 	Program   string          `json:"program"`
 	Worktree  GitWorktreeData `json:"worktree"`
 	DiffStats DiffStatsData   `json:"diff_stats"`
+	Account   string          `json:"account"`
+	Role      string          `json:"role"`
 }
 
 // GitWorktreeData represents the serializable data of a GitWorktree

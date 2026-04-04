@@ -52,6 +52,10 @@ type Instance struct {
 	// Prompt is the initial prompt to pass to the instance on startup
 	Prompt string
 
+	// Conductor fields
+	Account string // Account name from conductor config
+	Role    string // "orchestrator" or "worker", inherited from account
+
 	// DiffStats stores the current git diff statistics
 	diffStats *git.DiffStats
 
@@ -80,6 +84,8 @@ func (i *Instance) ToInstanceData() InstanceData {
 		UpdatedAt: time.Now(),
 		Program:   i.Program,
 		AutoYes:   i.AutoYes,
+		Account:   i.Account,
+		Role:      i.Role,
 	}
 
 	// Only include worktree data if gitWorktree is initialized
@@ -118,6 +124,8 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 		CreatedAt: data.CreatedAt,
 		UpdatedAt: data.UpdatedAt,
 		Program:   data.Program,
+		Account:   data.Account,
+		Role:      data.Role,
 		gitWorktree: git.NewGitWorktreeFromStorage(
 			data.Worktree.RepoPath,
 			data.Worktree.WorktreePath,
@@ -157,6 +165,10 @@ type InstanceOptions struct {
 	AutoYes bool
 	// Branch is an existing branch name to start the session on (empty = new branch from HEAD)
 	Branch string
+	// Account is the conductor account name for this instance.
+	Account string
+	// Role is "orchestrator" or "worker".
+	Role string
 }
 
 func NewInstance(opts InstanceOptions) (*Instance, error) {
@@ -179,6 +191,8 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 		UpdatedAt:      t,
 		AutoYes:        false,
 		selectedBranch: opts.Branch,
+		Account:        opts.Account,
+		Role:           opts.Role,
 	}, nil
 }
 
