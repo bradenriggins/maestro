@@ -15,7 +15,7 @@ func makeTestRegistry() Registry {
 			"orch-1": {
 				Account:      "alice",
 				Role:         "orchestrator",
-				TmuxSession:  "conductor-orch-1",
+				TmuxSession:  "claudeconductor_orch-1",
 				WorktreePath: "/tmp/orch-1",
 				Branch:       "main",
 				Status:       StateIdle,
@@ -25,7 +25,7 @@ func makeTestRegistry() Registry {
 			"worker-1": {
 				Account:      "bob",
 				Role:         "worker",
-				TmuxSession:  "conductor-worker-1",
+				TmuxSession:  "claudeconductor_worker-1",
 				WorktreePath: "/tmp/worker-1",
 				Branch:       "feat/foo",
 				Status:       StateWorking,
@@ -35,7 +35,7 @@ func makeTestRegistry() Registry {
 			"worker-2": {
 				Account:      "carol",
 				Role:         "worker",
-				TmuxSession:  "conductor-worker-2",
+				TmuxSession:  "claudeconductor_worker-2",
 				WorktreePath: "/tmp/worker-2",
 				Branch:       "feat/bar",
 				Status:       StateIdle,
