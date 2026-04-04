@@ -55,6 +55,8 @@ type Instance struct {
 	// Conductor fields
 	Account string // Account name from conductor config
 	Role    string // "orchestrator" or "worker", inherited from account
+	// Env holds environment variables to inject into the tmux session (e.g. CLAUDE_CONFIG_DIR).
+	Env map[string]string
 
 	// DiffStats stores the current git diff statistics
 	diffStats *git.DiffStats
@@ -169,6 +171,8 @@ type InstanceOptions struct {
 	Account string
 	// Role is "orchestrator" or "worker".
 	Role string
+	// Env contains environment variables to inject into the tmux session.
+	Env map[string]string
 }
 
 func NewInstance(opts InstanceOptions) (*Instance, error) {
@@ -193,6 +197,7 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 		selectedBranch: opts.Branch,
 		Account:        opts.Account,
 		Role:           opts.Role,
+		Env:            opts.Env,
 	}, nil
 }
 
@@ -272,12 +277,18 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 		}
 
 		// Create new session
-		if err := i.tmuxSession.Start(i.gitWorktree.GetWorktreePath()); err != nil {
+		var startErr error
+		if len(i.Env) > 0 {
+			startErr = i.tmuxSession.StartWithEnv(i.gitWorktree.GetWorktreePath(), i.Env)
+		} else {
+			startErr = i.tmuxSession.Start(i.gitWorktree.GetWorktreePath())
+		}
+		if startErr != nil {
 			// Cleanup git worktree if tmux session creation fails
 			if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
-				err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
+				startErr = fmt.Errorf("%v (cleanup error: %v)", startErr, cleanupErr)
 			}
-			setupErr = fmt.Errorf("failed to start new session: %w", err)
+			setupErr = fmt.Errorf("failed to start new session: %w", startErr)
 			return setupErr
 		}
 	}
