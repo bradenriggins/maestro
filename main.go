@@ -6,6 +6,7 @@ import (
 	"claude-conductor/config"
 	"claude-conductor/daemon"
 	"claude-conductor/log"
+	"claude-conductor/pkg/accounts"
 	"claude-conductor/session"
 	"claude-conductor/session/git"
 	"claude-conductor/session/tmux"
@@ -140,6 +141,17 @@ var (
 			fmt.Printf("claude-conductor version %s\n", version)
 		},
 	}
+
+	setupCmd = &cobra.Command{
+		Use:   "setup",
+		Short: "Configure Anthropic accounts for multi-session orchestration",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := accounts.RunSetup(); err != nil {
+				return fmt.Errorf("setup failed: %w", err)
+			}
+			return nil
+		},
+	}
 )
 
 func init() {
@@ -159,6 +171,7 @@ func init() {
 	rootCmd.AddCommand(debugCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(resetCmd)
+	rootCmd.AddCommand(setupCmd)
 }
 
 func main() {
