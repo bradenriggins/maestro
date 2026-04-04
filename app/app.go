@@ -4,6 +4,7 @@ import (
 	"claude-conductor/config"
 	"claude-conductor/keys"
 	"claude-conductor/log"
+	"claude-conductor/pkg/accounts"
 	"claude-conductor/session"
 	"claude-conductor/session/git"
 	"claude-conductor/ui"
@@ -63,6 +64,10 @@ type home struct {
 	// appState stores persistent application state like seen help screens
 	appState config.AppState
 
+	// conductorConfig is the multi-account conductor configuration.
+	// Nil if no conductor config exists (falls back to claude-squad behavior).
+	conductorConfig *accounts.ConductorConfig
+
 	// -- State --
 
 	// state is the current discrete state of the application
@@ -110,6 +115,12 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 	// Load application state
 	appState := config.LoadState()
 
+	// Load conductor config (optional — nil means single-account mode)
+	conductorCfg, err := accounts.LoadConductorConfig()
+	if err != nil {
+		log.ErrorLog.Printf("failed to load conductor config: %v", err)
+	}
+
 	// Initialize storage
 	storage, err := session.NewStorage(appState)
 	if err != nil {
@@ -118,17 +129,18 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 	}
 
 	h := &home{
-		ctx:          ctx,
-		spinner:      spinner.New(spinner.WithSpinner(spinner.MiniDot)),
-		menu:         ui.NewMenu(),
-		tabbedWindow: ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
-		errBox:       ui.NewErrBox(),
-		storage:      storage,
-		appConfig:    appConfig,
-		program:      program,
-		autoYes:      autoYes,
-		state:        stateDefault,
-		appState:     appState,
+		ctx:             ctx,
+		spinner:         spinner.New(spinner.WithSpinner(spinner.MiniDot)),
+		menu:            ui.NewMenu(),
+		tabbedWindow:    ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
+		errBox:          ui.NewErrBox(),
+		storage:         storage,
+		appConfig:       appConfig,
+		program:         program,
+		autoYes:         autoYes,
+		state:           stateDefault,
+		appState:        appState,
+		conductorConfig: conductorCfg,
 	}
 	h.list = ui.NewList(&h.spinner, autoYes)
 
@@ -618,11 +630,22 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return nil
 		}
 
-		instance, err := session.NewInstance(session.InstanceOptions{
+		promptOpts := session.InstanceOptions{
 			Title:   "",
 			Path:    ".",
 			Program: m.program,
-		})
+		}
+		if m.conductorConfig != nil {
+			acct := m.nextAvailableAccount()
+			if acct == nil {
+				return m, m.handleError(fmt.Errorf("all accounts have active instances — pause or kill one first"))
+			}
+			promptOpts.Account = acct.Name
+			promptOpts.Role = string(acct.Role)
+			promptOpts.Env = map[string]string{"CLAUDE_CONFIG_DIR": acct.ConfigDir}
+		}
+
+		instance, err := session.NewInstance(promptOpts)
 		if err != nil {
 			return m, m.handleError(err)
 		}
@@ -639,11 +662,23 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, m.handleError(
 				fmt.Errorf("you can't create more than %d instances", GlobalInstanceLimit))
 		}
-		instance, err := session.NewInstance(session.InstanceOptions{
+
+		opts := session.InstanceOptions{
 			Title:   "",
 			Path:    ".",
 			Program: m.program,
-		})
+		}
+		if m.conductorConfig != nil {
+			acct := m.nextAvailableAccount()
+			if acct == nil {
+				return m, m.handleError(fmt.Errorf("all accounts have active instances — pause or kill one first"))
+			}
+			opts.Account = acct.Name
+			opts.Role = string(acct.Role)
+			opts.Env = map[string]string{"CLAUDE_CONFIG_DIR": acct.ConfigDir}
+		}
+
+		instance, err := session.NewInstance(opts)
 		if err != nil {
 			return m, m.handleError(err)
 		}
@@ -792,6 +827,32 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 	default:
 		return m, nil
 	}
+}
+
+// nextAvailableAccount returns the first account that does not have an active
+// (Running or Starting) instance, or nil if all accounts are occupied.
+func (m *home) nextAvailableAccount() *accounts.Account {
+	if m.conductorConfig == nil {
+		return nil
+	}
+
+	// claude-squad statuses: Running, Ready, Loading, Paused
+	// Killed instances are removed from the list entirely.
+	activeAccounts := make(map[string]bool)
+	for _, inst := range m.list.GetInstances() {
+		if inst.Account != "" && inst.Status != session.Paused {
+			activeAccounts[inst.Account] = true
+		}
+	}
+
+	for i := range m.conductorConfig.Accounts {
+		acct := &m.conductorConfig.Accounts[i]
+		if !activeAccounts[acct.Name] {
+			return acct
+		}
+	}
+
+	return nil
 }
 
 // instanceChanged updates the preview pane, menu, and diff pane based on the selected instance. It returns an error
