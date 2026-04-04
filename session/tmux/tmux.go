@@ -152,6 +152,70 @@ func (t *TmuxSession) Start(workDir string) error {
 	return nil
 }
 
+// StartWithEnv creates and starts a new tmux session with environment variables injected.
+// The env map is passed to tmux via -e flags (requires tmux 3.2+).
+func (t *TmuxSession) StartWithEnv(workDir string, env map[string]string) error {
+	if t.DoesSessionExist() {
+		return fmt.Errorf("tmux session already exists: %s", t.sanitizedName)
+	}
+
+	args := []string{"new-session"}
+	for k, v := range env {
+		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
+	}
+	args = append(args, "-d", "-s", t.sanitizedName, "-c", workDir, t.program)
+
+	cmd := exec.Command("tmux", args...)
+	ptmx, err := t.ptyFactory.Start(cmd)
+	if err != nil {
+		if t.DoesSessionExist() {
+			cleanupCmd := exec.Command("tmux", "kill-session", "-t", t.sanitizedName)
+			if cleanupErr := t.cmdExec.Run(cleanupCmd); cleanupErr != nil {
+				err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
+			}
+		}
+		return fmt.Errorf("error starting tmux session: %w", err)
+	}
+
+	timeout := time.After(2 * time.Second)
+	sleepDuration := 5 * time.Millisecond
+	for !t.DoesSessionExist() {
+		select {
+		case <-timeout:
+			if cleanupErr := t.Close(); cleanupErr != nil {
+				err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
+			}
+			return fmt.Errorf("timed out waiting for tmux session %s: %v", t.sanitizedName, err)
+		default:
+			time.Sleep(sleepDuration)
+			if sleepDuration < 50*time.Millisecond {
+				sleepDuration *= 2
+			}
+		}
+	}
+	ptmx.Close()
+
+	historyCmd := exec.Command("tmux", "set-option", "-t", t.sanitizedName, "history-limit", "10000")
+	if err := t.cmdExec.Run(historyCmd); err != nil {
+		log.InfoLog.Printf("Warning: failed to set history-limit for session %s: %v", t.sanitizedName, err)
+	}
+
+	mouseCmd := exec.Command("tmux", "set-option", "-t", t.sanitizedName, "mouse", "on")
+	if err := t.cmdExec.Run(mouseCmd); err != nil {
+		log.InfoLog.Printf("Warning: failed to enable mouse scrolling for session %s: %v", t.sanitizedName, err)
+	}
+
+	err = t.Restore()
+	if err != nil {
+		if cleanupErr := t.Close(); cleanupErr != nil {
+			err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
+		}
+		return fmt.Errorf("error restoring tmux session: %w", err)
+	}
+
+	return nil
+}
+
 // CheckAndHandleTrustPrompt checks the pane content once for a trust prompt and dismisses it if found.
 // Returns true if the prompt was found and handled.
 func (t *TmuxSession) CheckAndHandleTrustPrompt() bool {
