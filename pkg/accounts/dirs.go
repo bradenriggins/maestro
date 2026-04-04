@@ -16,6 +16,7 @@ var RequiredDirs = []string{
 	"logs",
 	"history",
 	"archive",
+	"usage",
 }
 
 func EnsureConductorDirs() error {

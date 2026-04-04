@@ -56,23 +56,33 @@ func CollectUsage(cfg *accounts.ConductorConfig) (*UsageReport, error) {
 			LastUpdated: NowISO(),
 		}
 
-		// Try to read stats-cache.json from the account's config dir
-		statsPath := filepath.Join(acct.ConfigDir, "stats-cache.json")
-		messageCount := countRecentMessages(statsPath)
-
 		// Determine limit based on tier (we don't have tier info in config,
 		// so use role as heuristic: orchestrator = max20, worker = max5)
 		limit := 225
 		if acct.Role == accounts.RoleOrchestrator {
 			limit = 900
 		}
-
-		usage.MessagesUsed = messageCount
 		usage.MessagesLimit = limit
-		if limit > 0 {
-			usage.UsagePercent = float64(messageCount) / float64(limit) * 100.0
-			if usage.UsagePercent > 100.0 {
-				usage.UsagePercent = 100.0
+
+		// Try real-time statusLine data first
+		slUsage := collectStatusLineUsage(acct.Name)
+		if slUsage != nil && slUsage.FiveHour != nil {
+			usage.UsagePercent = slUsage.FiveHour.UsedPercentage
+			usage.MessagesUsed = int(slUsage.FiveHour.UsedPercentage * float64(limit) / 100.0)
+			if slUsage.FiveHour.ResetsAt > 0 {
+				resetTime := time.Unix(slUsage.FiveHour.ResetsAt, 0).UTC().Format(time.RFC3339)
+				usage.WindowResetAt = resetTime
+			}
+		} else {
+			// Fallback to stats-cache heuristic
+			statsPath := filepath.Join(acct.ConfigDir, "stats-cache.json")
+			messageCount := countRecentMessages(statsPath)
+			usage.MessagesUsed = messageCount
+			if limit > 0 {
+				usage.UsagePercent = float64(messageCount) / float64(limit) * 100.0
+				if usage.UsagePercent > 100.0 {
+					usage.UsagePercent = 100.0
+				}
 			}
 		}
 
@@ -188,8 +198,12 @@ func FormatUsageSummary(report *UsageReport) string {
 	var result string
 	for _, acct := range report.Accounts {
 		bar := renderUsageBar(acct.UsagePercent, 10)
-		result += fmt.Sprintf("  %-12s [%s] %5.1f%%  (%d/%d msgs)\n",
-			acct.AccountName, bar, acct.UsagePercent, acct.MessagesUsed, acct.MessagesLimit)
+		resetInfo := ""
+		if acct.WindowResetAt != "" && len(acct.WindowResetAt) >= 16 {
+			resetInfo = fmt.Sprintf("  (resets: %s)", acct.WindowResetAt[:16])
+		}
+		result += fmt.Sprintf("  %-12s [%s] %5.1f%%  (%d/%d msgs)%s\n",
+			acct.AccountName, bar, acct.UsagePercent, acct.MessagesUsed, acct.MessagesLimit, resetInfo)
 	}
 	return result
 }

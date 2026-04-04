@@ -140,6 +140,18 @@ func RunSetup() error {
 			Email:     status.Email,
 			Verified:  true,
 		})
+
+		// Configure statusLine for real-time usage tracking
+		scriptPath, slErr := generateStatusLineScriptFile(nameStr)
+		if slErr != nil {
+			fmt.Printf("  Warning: could not set up usage tracking: %v\n", slErr)
+		} else {
+			if slErr := configureStatusLine(configDir, scriptPath); slErr != nil {
+				fmt.Printf("  Warning: could not configure statusLine: %v\n", slErr)
+			} else {
+				fmt.Println("  \u2713 Usage tracking configured (statusLine)")
+			}
+		}
 	}
 
 	if err := SaveConductorConfig(cfg); err != nil {
@@ -154,7 +166,7 @@ func RunSetup() error {
 	os.Chmod(base, 0700)
 
 	// Create required directories
-	for _, dir := range []string{"tasks", "status", "results", "logs", "captures", "history", "archive", "bin"} {
+	for _, dir := range []string{"tasks", "status", "results", "logs", "captures", "history", "archive", "bin", "usage"} {
 		if err := os.MkdirAll(filepath.Join(base, dir), 0700); err != nil {
 			return fmt.Errorf("failed to create %s dir: %w", dir, err)
 		}
