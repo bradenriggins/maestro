@@ -58,6 +58,9 @@ func (s *TaskStore) Create(id, prompt, workerInstance, workerAccount, statusFile
 	if err := os.MkdirAll(s.resultsDir, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create results dir: %w", err)
 	}
+	if err := os.MkdirAll(s.statusDir, 0700); err != nil {
+		return nil, fmt.Errorf("failed to create status dir: %w", err)
+	}
 
 	now := NowISO()
 	taskFile := s.taskPath(id)
@@ -130,7 +133,7 @@ func (s *TaskStore) List(statusFilter string) ([]*Task, error) {
 		id := strings.TrimSuffix(e.Name(), ".json")
 		task, err := s.Get(id)
 		if err != nil {
-			return nil, err
+			continue // skip missing or corrupt files (TOCTOU race)
 		}
 		if statusFilter != "" && task.Status != statusFilter {
 			continue

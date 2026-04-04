@@ -21,11 +21,13 @@ func AtomicWriteJSON(path string, data interface{}) error {
 	return os.Rename(tmp, path)
 }
 
-func GenerateTaskID() string {
+func GenerateTaskID() (string, error) {
 	ts := time.Now().Unix()
-	b := make([]byte, 2)
-	rand.Read(b)
-	return fmt.Sprintf("task-%d-%s", ts, hex.EncodeToString(b))
+	b := make([]byte, 4) // 4 bytes = 8 hex chars for better uniqueness
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("failed to generate random bytes: %w", err)
+	}
+	return fmt.Sprintf("task-%d-%s", ts, hex.EncodeToString(b)), nil
 }
 
 func ReadJSONFile(path string, target interface{}) error {

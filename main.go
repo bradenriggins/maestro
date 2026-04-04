@@ -175,7 +175,8 @@ var (
 					fmt.Fprintf(os.Stderr, "Error: %s\n", de.Msg)
 					os.Exit(de.Code)
 				}
-				return err
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
 			}
 			fmt.Printf("Dispatched task %s to %s\n", result.TaskID, result.InstanceName)
 			return nil

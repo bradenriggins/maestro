@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestTask_IsTerminal(t *testing.T) {
@@ -26,12 +27,14 @@ func TestTask_IsTerminal(t *testing.T) {
 }
 
 func TestGenerateTaskID(t *testing.T) {
-	id := GenerateTaskID()
+	id, err := GenerateTaskID()
+	require.NoError(t, err)
 	assert.True(t, strings.HasPrefix(id, "task-"))
 	parts := strings.SplitN(id, "-", 3)
 	assert.Equal(t, 3, len(parts))
-	assert.Len(t, parts[2], 4)
-	id2 := GenerateTaskID()
+	assert.Len(t, parts[2], 8) // now 8 hex chars (4 bytes)
+	id2, err := GenerateTaskID()
+	require.NoError(t, err)
 	assert.NotEqual(t, id, id2)
 }
 

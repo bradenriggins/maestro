@@ -27,12 +27,14 @@ type ReconcileResult struct {
 
 // Reconcile checks registry against tmux reality and fixes state.
 // This is the core reconciliation logic from spec Section 12.1.
-func Reconcile(tmux TmuxChecker, registryPath string, store *TaskStore) (*ReconcileResult, error) {
+// It returns the updated registry so the caller can write it, avoiding
+// concurrent writes to registry.json.
+func Reconcile(tmux TmuxChecker, registryPath string, store *TaskStore) (*ReconcileResult, *Registry, error) {
 	result := &ReconcileResult{}
 
 	reg, err := LoadRegistryFromPath(registryPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load registry: %w", err)
+		return nil, nil, fmt.Errorf("failed to load registry: %w", err)
 	}
 
 	for name, entry := range reg.Instances {
@@ -73,7 +75,10 @@ func Reconcile(tmux TmuxChecker, registryPath string, store *TaskStore) (*Reconc
 						ws.State = StateIdle
 						ws.Timestamp = NowISO()
 						statusPath := store.StatusFilePath(name)
-						AtomicWriteJSON(statusPath, ws)
+						if err := AtomicWriteJSON(statusPath, ws); err != nil {
+							// Log but don't fail the whole reconciliation
+							continue
+						}
 						result.StatusCorrected = append(result.StatusCorrected, name)
 					}
 				}
@@ -96,9 +101,8 @@ func Reconcile(tmux TmuxChecker, registryPath string, store *TaskStore) (*Reconc
 		}
 	}
 
-	// Write updated registry
+	// Return the updated registry for the caller to write (avoids write contention)
 	reg.UpdatedAt = NowISO()
-	AtomicWriteJSON(registryPath, reg)
 
-	return result, nil
+	return result, reg, nil
 }

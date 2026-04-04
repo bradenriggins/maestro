@@ -76,6 +76,11 @@ func RunDispatch(instanceName string, taskPrompt string, redispatchTaskID string
 		return nil, &DispatchError{Code: 4, Msg: fmt.Sprintf("worker %q is not idle/ready", instanceName)}
 	}
 
+	// Validate prompt is provided for new dispatches
+	if redispatchTaskID == "" && strings.TrimSpace(taskPrompt) == "" {
+		return nil, &DispatchError{Code: 1, Msg: "task prompt is required when not re-dispatching"}
+	}
+
 	statusFilePath := store.StatusFilePath(instanceName)
 
 	var taskID string
@@ -116,7 +121,11 @@ func RunDispatch(instanceName string, taskPrompt string, redispatchTaskID string
 		taskPrompt = task.PromptFile
 	} else {
 		// 7. New dispatch
-		taskID = GenerateTaskID()
+		var idErr error
+		taskID, idErr = GenerateTaskID()
+		if idErr != nil {
+			return nil, fmt.Errorf("failed to generate task ID: %w", idErr)
+		}
 		task, err := store.Create(taskID, taskPrompt, instanceName, entry.Account, statusFilePath, "cli")
 		if err != nil {
 			return nil, fmt.Errorf("failed to create task: %w", err)
@@ -129,24 +138,19 @@ func RunDispatch(instanceName string, taskPrompt string, redispatchTaskID string
 
 	tmuxName := entry.TmuxSession
 
-	for attempt := 1; attempt <= MaxAttempts; attempt++ {
-		// Send instruction to tmux
+	// Send to tmux and poll for ack (up to MaxAttempts send attempts within this dispatch)
+	for sendAttempt := 1; sendAttempt <= MaxAttempts; sendAttempt++ {
 		if err := tmuxSendKeys(tmuxName, instruction); err != nil {
 			return nil, fmt.Errorf("failed to send keys to tmux: %w", err)
 		}
 
-		// Poll for acknowledgment
 		if pollForAck(store, taskID, PollTimeout, PollInterval) {
 			return &DispatchResult{TaskID: taskID, InstanceName: instanceName}, nil
 		}
 
-		// Timeout — retry or fail
-		if attempt < MaxAttempts {
-			task, getErr := store.Get(taskID)
-			if getErr == nil {
-				task.Attempts = attempt + 1
-				_ = store.Update(task)
-			}
+		// Log retry but don't mutate task.Attempts
+		if sendAttempt < MaxAttempts {
+			// Re-send the instruction on next iteration
 		}
 	}
 
@@ -193,14 +197,19 @@ func pollForAck(store *TaskStore, taskID string, timeout, interval time.Duration
 func updatePromptStatusFile(promptPath, newStatusPath string) error {
 	data, err := os.ReadFile(promptPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to read prompt file: %w", err)
 	}
 	lines := strings.Split(string(data), "\n")
+	found := false
 	for i, line := range lines {
 		if strings.HasPrefix(line, "Status File: ") {
 			lines[i] = "Status File: " + newStatusPath
+			found = true
 			break
 		}
+	}
+	if !found {
+		return fmt.Errorf("prompt file %q has no Status File line", promptPath)
 	}
 	return os.WriteFile(promptPath, []byte(strings.Join(lines, "\n")), 0600)
 }
