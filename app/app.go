@@ -5,6 +5,7 @@ import (
 	"claude-conductor/keys"
 	"claude-conductor/log"
 	"claude-conductor/pkg/accounts"
+	"claude-conductor/pkg/orchestration"
 	"claude-conductor/session"
 	"claude-conductor/session/git"
 	"claude-conductor/ui"
@@ -12,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -236,6 +238,7 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
 			return m, m.handleError(err)
 		}
+		m.updateRegistry()
 
 		if m.promptAfterName {
 			m.state = statePrompt
@@ -322,6 +325,7 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
 			return m, m.handleError(err)
 		}
+		m.updateRegistry()
 		if m.autoYes {
 			msg.instance.AutoYes = true
 		}
@@ -355,7 +359,65 @@ func (m *home) handleQuit() (tea.Model, tea.Cmd) {
 	if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
 		return m, m.handleError(err)
 	}
+	m.updateRegistry()
 	return m, tea.Quit
+}
+
+// updateRegistry writes the current instance state to registry.json for
+// orchestration consumers. It is a best-effort operation; errors are logged
+// but not surfaced to the user.
+func (m *home) updateRegistry() {
+	if m.conductorConfig == nil {
+		return
+	}
+
+	baseDir, err := accounts.ConductorDir()
+	if err != nil {
+		log.ErrorLog.Printf("updateRegistry: failed to get conductor dir: %v", err)
+		return
+	}
+
+	instances := m.list.GetInstances()
+	entries := make(map[string]orchestration.RegistryEntry, len(instances))
+
+	for _, inst := range instances {
+		if inst.Account == "" {
+			continue
+		}
+
+		var status string
+		switch inst.Status {
+		case session.Paused:
+			status = "paused"
+		case session.Loading:
+			status = "starting"
+		case session.Ready, session.Running:
+			status = "running"
+		default:
+			status = "running"
+		}
+
+		entries[inst.Title] = orchestration.RegistryEntry{
+			Account:      inst.Account,
+			Role:         inst.Role,
+			TmuxSession:  "claudeconductor_" + inst.Title,
+			WorktreePath: inst.GetWorktreePath(),
+			Branch:       inst.Branch,
+			Status:       status,
+			CreatedAt:    inst.CreatedAt.Format(time.RFC3339),
+			LastOutputAt: inst.UpdatedAt.Format(time.RFC3339),
+		}
+	}
+
+	registry := orchestration.Registry{
+		Instances: entries,
+		UpdatedAt: orchestration.NowISO(),
+	}
+
+	registryPath := filepath.Join(baseDir, "registry.json")
+	if err := orchestration.AtomicWriteJSON(registryPath, registry); err != nil {
+		log.ErrorLog.Printf("updateRegistry: failed to write registry.json: %v", err)
+	}
 }
 
 func (m *home) handleMenuHighlighting(msg tea.KeyMsg) (cmd tea.Cmd, returnEarly bool) {
@@ -446,6 +508,20 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			// Return a tea.Cmd that runs instance.Start in the background
 			startCmd := func() tea.Msg {
 				err := instance.Start(true)
+				if err == nil && instance.Account != "" {
+					conductorDir, _ := accounts.ConductorDir()
+					worktreePath := instance.GetWorktreePath()
+					if worktreePath != "" && conductorDir != "" {
+						ctx := accounts.CLAUDEMDContext{
+							InstanceName:   instance.Title,
+							AccountName:    instance.Account,
+							Role:           instance.Role,
+							ConductorDir:   conductorDir,
+							StatusFilePath: filepath.Join(conductorDir, "status", instance.Title+".json"),
+						}
+						accounts.GenerateCLAUDEMD(worktreePath, ctx)
+					}
+				}
 				return instanceStartedMsg{
 					instance:        instance,
 					err:             err,
@@ -532,6 +608,20 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 
 					startCmd := func() tea.Msg {
 						err := selected.Start(true)
+						if err == nil && selected.Account != "" {
+							conductorDir, _ := accounts.ConductorDir()
+							worktreePath := selected.GetWorktreePath()
+							if worktreePath != "" && conductorDir != "" {
+								ctx := accounts.CLAUDEMDContext{
+									InstanceName:   selected.Title,
+									AccountName:    selected.Account,
+									Role:           selected.Role,
+									ConductorDir:   conductorDir,
+									StatusFilePath: filepath.Join(conductorDir, "status", selected.Title+".json"),
+								}
+								accounts.GenerateCLAUDEMD(worktreePath, ctx)
+							}
+						}
 						return instanceStartedMsg{
 							instance:        selected,
 							err:             err,
@@ -966,6 +1056,20 @@ type instanceStartDoneMsg struct {
 func runInstanceStartCmd(instance *session.Instance) tea.Cmd {
 	return func() tea.Msg {
 		err := instance.Start(true)
+		if err == nil && instance.Account != "" {
+			conductorDir, _ := accounts.ConductorDir()
+			worktreePath := instance.GetWorktreePath()
+			if worktreePath != "" && conductorDir != "" {
+				ctx := accounts.CLAUDEMDContext{
+					InstanceName:   instance.Title,
+					AccountName:    instance.Account,
+					Role:           instance.Role,
+					ConductorDir:   conductorDir,
+					StatusFilePath: filepath.Join(conductorDir, "status", instance.Title+".json"),
+				}
+				accounts.GenerateCLAUDEMD(worktreePath, ctx)
+			}
+		}
 		return instanceStartDoneMsg{instance: instance, err: err}
 	}
 }
