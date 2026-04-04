@@ -49,6 +49,12 @@ const (
 	stateHelp
 	// stateConfirm is the state when a confirmation modal is displayed.
 	stateConfirm
+	// stateOrchestration is the state when the orchestration overlay is displayed.
+	stateOrchestration
+	// stateQuickDispatch is the state when the quick dispatch overlay is displayed.
+	stateQuickDispatch
+	// stateLogViewer is the state when the log viewer overlay is displayed.
+	stateLogViewer
 )
 
 type home struct {
@@ -103,6 +109,15 @@ type home struct {
 	// confirmationOverlay displays confirmation modals
 	confirmationOverlay *overlay.ConfirmationOverlay
 
+	// Conductor overlays
+	orchestrationOverlay *overlay.OrchestrationOverlay
+	quickDispatchOverlay *overlay.QuickDispatchOverlay
+	logViewerOverlay     *overlay.LogViewerOverlay
+	statusBar            *ui.StatusBar
+
+	// windowWidth stores the last known terminal width for overlay sizing
+	windowWidth int
+
 	// lastReconcileTime tracks the wall-clock time of the last reconciliation
 	// tick so we can detect wake-from-sleep gaps.
 	lastReconcileTime time.Time
@@ -131,21 +146,28 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 		os.Exit(1)
 	}
 
+	orchOverlay := overlay.NewOrchestrationOverlay()
+	logOverlay := overlay.NewLogViewerOverlay()
+	statusBar := ui.NewStatusBar()
+
 	h := &home{
-		ctx:             ctx,
-		spinner:         spinner.New(spinner.WithSpinner(spinner.MiniDot)),
-		menu:            ui.NewMenu(),
-		tabbedWindow:    ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
-		errBox:          ui.NewErrBox(),
-		storage:         storage,
-		appConfig:       appConfig,
-		program:         program,
-		autoYes:         autoYes,
-		state:           stateDefault,
-		appState:        appState,
-		conductorConfig:   conductorCfg,
-		lastReconcileTime: time.Now(),
-		lastOutputChange:  make(map[string]time.Time),
+		ctx:                  ctx,
+		spinner:              spinner.New(spinner.WithSpinner(spinner.MiniDot)),
+		menu:                 ui.NewMenu(),
+		tabbedWindow:         ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
+		errBox:               ui.NewErrBox(),
+		storage:              storage,
+		appConfig:            appConfig,
+		program:              program,
+		autoYes:              autoYes,
+		state:                stateDefault,
+		appState:             appState,
+		conductorConfig:      conductorCfg,
+		orchestrationOverlay: orchOverlay,
+		logViewerOverlay:     logOverlay,
+		statusBar:            statusBar,
+		lastReconcileTime:    time.Now(),
+		lastOutputChange:     make(map[string]time.Time),
 	}
 	h.list = ui.NewList(&h.spinner, autoYes)
 
@@ -195,6 +217,17 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 		log.ErrorLog.Print(err)
 	}
 	m.menu.SetSize(msg.Width, menuHeight)
+	m.windowWidth = msg.Width
+
+	if m.orchestrationOverlay != nil {
+		m.orchestrationOverlay.SetSize(msg.Width, msg.Height)
+	}
+	if m.logViewerOverlay != nil {
+		m.logViewerOverlay.SetSize(msg.Width, msg.Height)
+	}
+	if m.statusBar != nil {
+		m.statusBar.SetWidth(msg.Width)
+	}
 }
 
 func (m *home) Init() tea.Cmd {
@@ -462,7 +495,8 @@ func (m *home) handleMenuHighlighting(msg tea.KeyMsg) (cmd tea.Cmd, returnEarly 
 		m.keySent = false
 		return nil, false
 	}
-	if m.state == statePrompt || m.state == stateHelp || m.state == stateConfirm {
+	if m.state == statePrompt || m.state == stateHelp || m.state == stateConfirm ||
+		m.state == stateOrchestration || m.state == stateQuickDispatch || m.state == stateLogViewer {
 		return nil, false
 	}
 	// If it's in the global keymap, we should try to highlight it.
@@ -708,6 +742,44 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		return m, nil
 	}
 
+	if m.state == stateOrchestration {
+		if m.orchestrationOverlay.HandleKeyPress(msg) {
+			m.orchestrationOverlay.Close()
+			m.state = stateDefault
+		}
+		return m, nil
+	}
+
+	if m.state == stateLogViewer {
+		if m.logViewerOverlay.HandleKeyPress(msg) {
+			m.logViewerOverlay.Close()
+			m.state = stateDefault
+		}
+		return m, nil
+	}
+
+	if m.state == stateQuickDispatch {
+		if msg.String() == "ctrl+c" {
+			m.quickDispatchOverlay = nil
+			m.state = stateDefault
+			return m, nil
+		}
+		shouldClose := m.quickDispatchOverlay.HandleKeyPress(msg)
+		if shouldClose {
+			if m.quickDispatchOverlay.IsSubmitted() {
+				worker := m.quickDispatchOverlay.GetWorker()
+				task := m.quickDispatchOverlay.GetTask()
+				// Dispatch in background
+				go func() {
+					orchestration.RunDispatch(worker, task, "")
+				}()
+			}
+			m.quickDispatchOverlay = nil
+			m.state = stateDefault
+		}
+		return m, nil
+	}
+
 	// Exit scrolling mode when ESC is pressed and preview pane is in scrolling mode
 	// Check if Escape key was pressed and we're not in the diff tab (meaning we're in preview tab)
 	// Always check for escape key first to ensure it doesn't get intercepted elsewhere
@@ -940,6 +1012,39 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			}
 		}
 		return m, tea.WindowSize()
+	case keys.KeyOrchestration:
+		if m.orchestrationOverlay.IsVisible() {
+			m.orchestrationOverlay.Close()
+			m.state = stateDefault
+		} else {
+			m.orchestrationOverlay.Toggle()
+			m.state = stateOrchestration
+		}
+		return m, nil
+	case keys.KeyQuickDispatch:
+		if m.conductorConfig == nil {
+			return m, nil // no conductor mode
+		}
+		// Get worker names from the current instance list
+		var workers []string
+		for _, inst := range m.list.GetInstances() {
+			if inst.Role == "worker" && inst.Status != session.Paused {
+				workers = append(workers, inst.Title)
+			}
+		}
+		m.quickDispatchOverlay = overlay.NewQuickDispatchOverlay(workers)
+		m.quickDispatchOverlay.SetWidth(m.windowWidth)
+		m.state = stateQuickDispatch
+		return m, nil
+	case keys.KeyLogViewer:
+		if m.logViewerOverlay.IsVisible() {
+			m.logViewerOverlay.Close()
+			m.state = stateDefault
+		} else {
+			m.logViewerOverlay.Toggle()
+			m.state = stateLogViewer
+		}
+		return m, nil
 	case keys.KeyEnter:
 		if m.list.NumInstances() == 0 {
 			return m, nil
@@ -1231,11 +1336,24 @@ func (m *home) View() string {
 	previewWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(m.tabbedWindow.String())
 	listAndPreview := lipgloss.JoinHorizontal(lipgloss.Top, listWithPadding, previewWithPadding)
 
-	mainView := lipgloss.JoinVertical(
-		lipgloss.Center,
+	// Add conductor status bar if in conductor mode
+	statusBarStr := ""
+	if m.conductorConfig != nil && m.statusBar != nil {
+		statusBarStr = m.statusBar.Render()
+	}
+
+	viewParts := []string{
 		listAndPreview,
 		m.menu.String(),
-		m.errBox.String(),
+	}
+	if statusBarStr != "" {
+		viewParts = append(viewParts, statusBarStr)
+	}
+	viewParts = append(viewParts, m.errBox.String())
+
+	mainView := lipgloss.JoinVertical(
+		lipgloss.Center,
+		viewParts...,
 	)
 
 	if m.state == statePrompt {
@@ -1253,6 +1371,17 @@ func (m *home) View() string {
 			log.ErrorLog.Printf("confirmation overlay is nil")
 		}
 		return overlay.PlaceOverlay(0, 0, m.confirmationOverlay.Render(), mainView, true, true)
+	}
+
+	// Render conductor overlays
+	if m.orchestrationOverlay != nil && m.orchestrationOverlay.IsVisible() {
+		return overlay.PlaceOverlay(0, 0, m.orchestrationOverlay.Render(), mainView, true, true)
+	}
+	if m.logViewerOverlay != nil && m.logViewerOverlay.IsVisible() {
+		return overlay.PlaceOverlay(0, 0, m.logViewerOverlay.Render(), mainView, true, true)
+	}
+	if m.quickDispatchOverlay != nil {
+		return overlay.PlaceOverlay(0, 0, m.quickDispatchOverlay.Render(), mainView, true, true)
 	}
 
 	return mainView
