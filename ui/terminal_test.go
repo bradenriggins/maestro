@@ -1,10 +1,10 @@
 package ui
 
 import (
-	"claude-squad/cmd/cmd_test"
-	"claude-squad/log"
-	"claude-squad/session"
-	"claude-squad/session/tmux"
+	"claude-conductor/cmd/cmd_test"
+	"claude-conductor/log"
+	"claude-conductor/session"
+	"claude-conductor/session/tmux"
 	"fmt"
 	"os/exec"
 	"strings"

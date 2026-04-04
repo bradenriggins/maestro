@@ -1,8 +1,8 @@
 package git
 
 import (
-	"claude-squad/config"
-	"claude-squad/log"
+	"claude-conductor/config"
+	"claude-conductor/log"
 	"fmt"
 	"path/filepath"
 	"time"

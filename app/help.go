@@ -1,10 +1,10 @@
 package app
 
 import (
-	"claude-squad/log"
-	"claude-squad/session"
-	"claude-squad/ui"
-	"claude-squad/ui/overlay"
+	"claude-conductor/log"
+	"claude-conductor/session"
+	"claude-conductor/ui"
+	"claude-conductor/ui/overlay"
 	"fmt"
 
 	tea "github.com/charmbracelet/bubbletea"

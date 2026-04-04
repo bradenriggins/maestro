@@ -1,8 +1,8 @@
 package ui
 
 import (
-	"claude-squad/log"
-	"claude-squad/session"
+	"claude-conductor/log"
+	"claude-conductor/session"
 	"errors"
 	"fmt"
 	"strings"

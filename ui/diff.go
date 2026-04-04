@@ -1,7 +1,7 @@
 package ui
 
 import (
-	"claude-squad/session"
+	"claude-conductor/session"
 	"fmt"
 	"strings"
 

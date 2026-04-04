@@ -1,7 +1,7 @@
 package session
 
 import (
-	"claude-squad/config"
+	"claude-conductor/config"
 	"encoding/json"
 	"fmt"
 	"time"

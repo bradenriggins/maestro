@@ -1,14 +1,14 @@
 package main
 
 import (
-	"claude-squad/app"
-	cmd2 "claude-squad/cmd"
-	"claude-squad/config"
-	"claude-squad/daemon"
-	"claude-squad/log"
-	"claude-squad/session"
-	"claude-squad/session/git"
-	"claude-squad/session/tmux"
+	"claude-conductor/app"
+	cmd2 "claude-conductor/cmd"
+	"claude-conductor/config"
+	"claude-conductor/daemon"
+	"claude-conductor/log"
+	"claude-conductor/session"
+	"claude-conductor/session/git"
+	"claude-conductor/session/tmux"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -18,13 +18,13 @@ import (
 )
 
 var (
-	version     = "1.0.17"
+	version     = "0.1.0"
 	programFlag string
 	autoYesFlag bool
 	daemonFlag  bool
 	rootCmd     = &cobra.Command{
-		Use:   "claude-squad",
-		Short: "Claude Squad - Manage multiple AI agents like Claude Code, Aider, Codex, and Amp.",
+		Use:   "claude-conductor",
+		Short: "Claude Conductor - Multi-account Claude Code orchestration.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
 			log.Initialize(daemonFlag)
@@ -44,7 +44,7 @@ var (
 			}
 
 			if !git.IsGitRepo(currentDir) {
-				return fmt.Errorf("error: claude-squad must be run from within a git repository")
+				return fmt.Errorf("error: claude-conductor must be run from within a git repository")
 			}
 
 			cfg := config.LoadConfig()
@@ -135,10 +135,9 @@ var (
 
 	versionCmd = &cobra.Command{
 		Use:   "version",
-		Short: "Print the version number of claude-squad",
+		Short: "Print the version number of claude-conductor",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("claude-squad version %s\n", version)
-			fmt.Printf("https://github.com/smtg-ai/claude-squad/releases/tag/v%s\n", version)
+			fmt.Printf("claude-conductor version %s\n", version)
 		},
 	}
 )

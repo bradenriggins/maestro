@@ -1,4 +1,4 @@
-module claude-squad
+module claude-conductor
 
 go 1.23.0
 

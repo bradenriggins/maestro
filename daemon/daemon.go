@@ -1,9 +1,9 @@
 package daemon
 
 import (
-	"claude-squad/config"
-	"claude-squad/log"
-	"claude-squad/session"
+	"claude-conductor/config"
+	"claude-conductor/log"
+	"claude-conductor/session"
 	"fmt"
 	"os"
 	"os/exec"

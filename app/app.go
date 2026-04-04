@@ -1,13 +1,13 @@
 package app
 
 import (
-	"claude-squad/config"
-	"claude-squad/keys"
-	"claude-squad/log"
-	"claude-squad/session"
-	"claude-squad/session/git"
-	"claude-squad/ui"
-	"claude-squad/ui/overlay"
+	"claude-conductor/config"
+	"claude-conductor/keys"
+	"claude-conductor/log"
+	"claude-conductor/session"
+	"claude-conductor/session/git"
+	"claude-conductor/ui"
+	"claude-conductor/ui/overlay"
 	"context"
 	"fmt"
 	"os"

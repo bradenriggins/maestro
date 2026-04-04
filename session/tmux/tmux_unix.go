@@ -3,7 +3,7 @@
 package tmux
 
 import (
-	"claude-squad/log"
+	"claude-conductor/log"
 	"os"
 	"os/signal"
 	"syscall"
