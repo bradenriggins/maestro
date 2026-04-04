@@ -84,12 +84,6 @@ type home struct {
 	// keySent is used to manage underlining menu items
 	keySent bool
 
-	// instanceStarting is true while a background instance start is in progress.
-	// Prevents double-submission and guards against interacting with a not-yet-started instance.
-	instanceStarting bool
-	// startingInstance holds a reference to the instance being started in the background.
-	startingInstance *session.Instance
-
 	// -- UI Components --
 
 	// list displays the list of instances
@@ -233,38 +227,56 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case keyupMsg:
 		m.menu.ClearKeydown()
 		return m, nil
-	case instanceStartDoneMsg:
-		m.instanceStarting = false
-		inst := msg.instance
-		m.startingInstance = nil
-
-		if msg.err != nil {
-			// Start failed — remove the instance from the list and show the error.
-			m.list.Kill()
-			return m, tea.Batch(tea.WindowSize(), m.instanceChanged(), m.handleError(msg.err))
-		}
-
-		// Save after successful start.
-		if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
-			return m, m.handleError(err)
-		}
-		m.updateRegistry()
-
-		if m.promptAfterName {
-			m.state = statePrompt
-			m.menu.SetState(ui.StatePrompt)
-			m.textInputOverlay = overlay.NewTextInputOverlay("Enter prompt", "")
-			m.promptAfterName = false
-		} else {
-			m.showHelpScreen(helpStart(inst), nil)
-		}
-
-		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
 	case reconcileTickMsg:
 		if m.conductorConfig != nil {
-			go m.runReconciliation()
+			return m, tea.Batch(
+				reconcileTickCmd(),
+				func() tea.Msg {
+					base, err := accounts.ConductorDir()
+					if err != nil {
+						return reconcileDoneMsg{err: err}
+					}
+					store, err := orchestration.NewTaskStore()
+					if err != nil {
+						return reconcileDoneMsg{err: err}
+					}
+					regPath := filepath.Join(base, "registry.json")
+					result, reg, err := orchestration.Reconcile(orchestration.RealTmuxChecker{}, regPath, store)
+					return reconcileDoneMsg{result: result, registry: reg, err: err}
+				},
+			)
 		}
 		return m, reconcileTickCmd()
+	case reconcileDoneMsg:
+		if msg.err != nil {
+			log.ErrorLog.Printf("reconciliation: %v", msg.err)
+		} else if msg.result != nil {
+			if len(msg.result.DeadSessions) > 0 {
+				log.InfoLog.Printf("reconciliation: detected dead sessions: %v", msg.result.DeadSessions)
+			}
+			if len(msg.result.FailedTasks) > 0 {
+				log.InfoLog.Printf("reconciliation: promoted stale tasks to failed: %v", msg.result.FailedTasks)
+			}
+			if len(msg.result.StatusCorrected) > 0 {
+				log.InfoLog.Printf("reconciliation: corrected status files: %v", msg.result.StatusCorrected)
+			}
+		}
+		// Write updated registry on the main loop (no contention with updateRegistry)
+		if msg.registry != nil {
+			base, err := accounts.ConductorDir()
+			if err == nil && base != "" {
+				regPath := filepath.Join(base, "registry.json")
+				if err := orchestration.AtomicWriteJSON(regPath, msg.registry); err != nil {
+					log.ErrorLog.Printf("reconciliation: failed to write registry: %v", err)
+				}
+			}
+		}
+		// Wake detection (safe — on main loop now)
+		if time.Since(m.lastReconcileTime) > 30*time.Second {
+			log.InfoLog.Printf("reconciliation: detected wake from sleep (gap: %v)", time.Since(m.lastReconcileTime))
+		}
+		m.lastReconcileTime = time.Now()
+		return m, nil
 	case metadataUpdateDoneMsg:
 		for _, r := range msg.results {
 			if r.updated {
@@ -441,47 +453,6 @@ func (m *home) updateRegistry() {
 	if err := orchestration.AtomicWriteJSON(registryPath, registry); err != nil {
 		log.ErrorLog.Printf("updateRegistry: failed to write registry.json: %v", err)
 	}
-}
-
-// runReconciliation performs a background reconciliation pass, checking tmux
-// sessions against the registry and detecting wake-from-sleep gaps.
-func (m *home) runReconciliation() {
-	base, err := accounts.ConductorDir()
-	if err != nil {
-		log.ErrorLog.Printf("reconciliation: failed to get conductor dir: %v", err)
-		return
-	}
-
-	store, err := orchestration.NewTaskStore()
-	if err != nil {
-		log.ErrorLog.Printf("reconciliation: failed to create task store: %v", err)
-		return
-	}
-
-	regPath := filepath.Join(base, "registry.json")
-	result, err := orchestration.Reconcile(orchestration.RealTmuxChecker{}, regPath, store)
-	if err != nil {
-		log.ErrorLog.Printf("reconciliation: %v", err)
-		return
-	}
-
-	if len(result.DeadSessions) > 0 {
-		log.InfoLog.Printf("reconciliation: detected dead sessions: %v", result.DeadSessions)
-	}
-	if len(result.FailedTasks) > 0 {
-		log.InfoLog.Printf("reconciliation: promoted stale tasks to failed: %v", result.FailedTasks)
-	}
-	if len(result.StatusCorrected) > 0 {
-		log.InfoLog.Printf("reconciliation: corrected status files: %v", result.StatusCorrected)
-	}
-
-	// Detect wake from sleep (tick gap > 30 seconds)
-	if time.Since(m.lastReconcileTime) > 30*time.Second {
-		log.InfoLog.Printf("reconciliation: detected wake from sleep (gap: %v)", time.Since(m.lastReconcileTime))
-		// Wake handling is logged but no automatic recovery
-		// (sending keystrokes to sessions in unknown state is dangerous)
-	}
-	m.lastReconcileTime = time.Now()
 }
 
 func (m *home) handleMenuHighlighting(msg tea.KeyMsg) (cmd tea.Cmd, returnEarly bool) {
@@ -953,6 +924,21 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, m.handleError(err)
 		}
 		m.updateRegistry()
+		// Regenerate CLAUDE.md on resume (reflects current worker list)
+		if selected.Account != "" {
+			conductorDir, _ := accounts.ConductorDir()
+			worktreePath := selected.GetWorktreePath()
+			if worktreePath != "" && conductorDir != "" {
+				ctx := accounts.CLAUDEMDContext{
+					InstanceName:   selected.Title,
+					AccountName:    selected.Account,
+					Role:           selected.Role,
+					ConductorDir:   conductorDir,
+					StatusFilePath: filepath.Join(conductorDir, "status", selected.Title+".json"),
+				}
+				accounts.GenerateCLAUDEMD(worktreePath, ctx)
+			}
+		}
 		return m, tea.WindowSize()
 	case keys.KeyEnter:
 		if m.list.NumInstances() == 0 {
@@ -1063,6 +1049,13 @@ type previewTickMsg struct{}
 // reconcileTickMsg triggers a periodic reconciliation pass.
 type reconcileTickMsg struct{}
 
+// reconcileDoneMsg carries the results of a reconciliation pass back to the main loop.
+type reconcileDoneMsg struct {
+	result   *orchestration.ReconcileResult
+	registry *orchestration.Registry
+	err      error
+}
+
 // reconcileTickCmd returns a Cmd that fires reconcileTickMsg every 5 seconds.
 func reconcileTickCmd() tea.Cmd {
 	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
@@ -1126,35 +1119,6 @@ type instanceMetaResult struct {
 // metadataUpdateDoneMsg is sent when the background metadata update completes.
 type metadataUpdateDoneMsg struct {
 	results []instanceMetaResult
-}
-
-// instanceStartDoneMsg is sent when the background instance start completes.
-type instanceStartDoneMsg struct {
-	instance *session.Instance
-	err      error
-}
-
-// runInstanceStartCmd returns a Cmd that performs the expensive instance.Start(true)
-// in a background goroutine so the main event loop stays responsive.
-func runInstanceStartCmd(instance *session.Instance) tea.Cmd {
-	return func() tea.Msg {
-		err := instance.Start(true)
-		if err == nil && instance.Account != "" {
-			conductorDir, _ := accounts.ConductorDir()
-			worktreePath := instance.GetWorktreePath()
-			if worktreePath != "" && conductorDir != "" {
-				ctx := accounts.CLAUDEMDContext{
-					InstanceName:   instance.Title,
-					AccountName:    instance.Account,
-					Role:           instance.Role,
-					ConductorDir:   conductorDir,
-					StatusFilePath: filepath.Join(conductorDir, "status", instance.Title+".json"),
-				}
-				accounts.GenerateCLAUDEMD(worktreePath, ctx)
-			}
-		}
-		return instanceStartDoneMsg{instance: instance, err: err}
-	}
 }
 
 // snapshotActiveInstances returns the currently active (started, not paused)

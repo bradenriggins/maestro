@@ -88,6 +88,7 @@ func (i *Instance) ToInstanceData() InstanceData {
 		AutoYes:   i.AutoYes,
 		Account:   i.Account,
 		Role:      i.Role,
+		Env:       i.Env,
 	}
 
 	// Only include worktree data if gitWorktree is initialized
@@ -128,6 +129,7 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 		Program:   data.Program,
 		Account:   data.Account,
 		Role:      data.Role,
+		Env:       data.Env,
 		gitWorktree: git.NewGitWorktreeFromStorage(
 			data.Worktree.RepoPath,
 			data.Worktree.WorktreePath,
@@ -522,26 +524,38 @@ func (i *Instance) Resume() error {
 		if err := i.tmuxSession.Restore(); err != nil {
 			log.ErrorLog.Print(err)
 			// If restore fails, fall back to creating new session
-			if err := i.tmuxSession.Start(i.gitWorktree.GetWorktreePath()); err != nil {
-				log.ErrorLog.Print(err)
+			var startErr error
+			if len(i.Env) > 0 {
+				startErr = i.tmuxSession.StartWithEnv(i.gitWorktree.GetWorktreePath(), i.Env)
+			} else {
+				startErr = i.tmuxSession.Start(i.gitWorktree.GetWorktreePath())
+			}
+			if startErr != nil {
+				log.ErrorLog.Print(startErr)
 				// Cleanup git worktree if tmux session creation fails
 				if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
-					err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
-					log.ErrorLog.Print(err)
+					startErr = fmt.Errorf("%v (cleanup error: %v)", startErr, cleanupErr)
+					log.ErrorLog.Print(startErr)
 				}
-				return fmt.Errorf("failed to start new session: %w", err)
+				return fmt.Errorf("failed to start new session: %w", startErr)
 			}
 		}
 	} else {
 		// Create new tmux session
-		if err := i.tmuxSession.Start(i.gitWorktree.GetWorktreePath()); err != nil {
-			log.ErrorLog.Print(err)
+		var startErr error
+		if len(i.Env) > 0 {
+			startErr = i.tmuxSession.StartWithEnv(i.gitWorktree.GetWorktreePath(), i.Env)
+		} else {
+			startErr = i.tmuxSession.Start(i.gitWorktree.GetWorktreePath())
+		}
+		if startErr != nil {
+			log.ErrorLog.Print(startErr)
 			// Cleanup git worktree if tmux session creation fails
 			if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
-				err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
-				log.ErrorLog.Print(err)
+				startErr = fmt.Errorf("%v (cleanup error: %v)", startErr, cleanupErr)
+				log.ErrorLog.Print(startErr)
 			}
-			return fmt.Errorf("failed to start new session: %w", err)
+			return fmt.Errorf("failed to start new session: %w", startErr)
 		}
 	}
 

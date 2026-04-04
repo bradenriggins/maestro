@@ -24,6 +24,7 @@ type InstanceData struct {
 	DiffStats DiffStatsData   `json:"diff_stats"`
 	Account   string          `json:"account"`
 	Role      string          `json:"role"`
+	Env       map[string]string `json:"env,omitempty"`
 }
 
 // GitWorktreeData represents the serializable data of a GitWorktree
