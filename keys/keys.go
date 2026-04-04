@@ -28,6 +28,13 @@ const (
 	// Diff keybindings
 	KeyShiftUp
 	KeyShiftDown
+
+	// Conductor-specific keybindings
+	KeyOrchestration // o key — orchestration overlay
+	KeyQuickDispatch // / key — quick dispatch
+	KeyLogViewer     // l key — log viewer
+	KeyPreviewToggle // f key — toggle preview mode
+	KeyDiff          // d key — show diff
 )
 
 // GlobalKeyStringsMap is a global, immutable map string to keybinding.
@@ -40,15 +47,19 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"shift+down": KeyShiftDown,
 	"N":          KeyPrompt,
 	"enter":      KeyEnter,
-	"o":          KeyEnter,
 	"n":          KeyNew,
-	"D":          KeyKill,
+	"x":          KeyKill,
 	"q":          KeyQuit,
 	"tab":        KeyTab,
-	"c":          KeyCheckout,
+	"p":          KeyCheckout,
 	"r":          KeyResume,
-	"p":          KeySubmit,
+	"P":          KeySubmit,
 	"?":          KeyHelp,
+	"o":          KeyOrchestration,
+	"/":          KeyQuickDispatch,
+	"l":          KeyLogViewer,
+	"f":          KeyPreviewToggle,
+	"d":          KeyDiff,
 }
 
 // GlobalkeyBindings is a global, immutable map of KeyName tot keybinding.
@@ -70,16 +81,16 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 		key.WithHelp("shift+↓", "scroll"),
 	),
 	KeyEnter: key.NewBinding(
-		key.WithKeys("enter", "o"),
-		key.WithHelp("↵/o", "open"),
+		key.WithKeys("enter"),
+		key.WithHelp("↵", "attach"),
 	),
 	KeyNew: key.NewBinding(
 		key.WithKeys("n"),
 		key.WithHelp("n", "new"),
 	),
 	KeyKill: key.NewBinding(
-		key.WithKeys("D"),
-		key.WithHelp("D", "kill"),
+		key.WithKeys("x"),
+		key.WithHelp("x", "kill"),
 	),
 	KeyHelp: key.NewBinding(
 		key.WithKeys("?"),
@@ -90,16 +101,16 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 		key.WithHelp("q", "quit"),
 	),
 	KeySubmit: key.NewBinding(
-		key.WithKeys("p"),
-		key.WithHelp("p", "push branch"),
+		key.WithKeys("P"),
+		key.WithHelp("P", "push branch"),
 	),
 	KeyPrompt: key.NewBinding(
 		key.WithKeys("N"),
 		key.WithHelp("N", "new with prompt"),
 	),
 	KeyCheckout: key.NewBinding(
-		key.WithKeys("c"),
-		key.WithHelp("c", "checkout"),
+		key.WithKeys("p"),
+		key.WithHelp("p", "pause"),
 	),
 	KeyTab: key.NewBinding(
 		key.WithKeys("tab"),
@@ -108,6 +119,29 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	KeyResume: key.NewBinding(
 		key.WithKeys("r"),
 		key.WithHelp("r", "resume"),
+	),
+
+	// -- Conductor keybindings --
+
+	KeyOrchestration: key.NewBinding(
+		key.WithKeys("o"),
+		key.WithHelp("o", "orchestration"),
+	),
+	KeyQuickDispatch: key.NewBinding(
+		key.WithKeys("/"),
+		key.WithHelp("/", "dispatch"),
+	),
+	KeyLogViewer: key.NewBinding(
+		key.WithKeys("l"),
+		key.WithHelp("l", "logs"),
+	),
+	KeyPreviewToggle: key.NewBinding(
+		key.WithKeys("f"),
+		key.WithHelp("f", "preview"),
+	),
+	KeyDiff: key.NewBinding(
+		key.WithKeys("d"),
+		key.WithHelp("d", "diff"),
 	),
 
 	// -- Special keybindings --

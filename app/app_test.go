@@ -251,7 +251,7 @@ func TestConfirmationFlowSimulation(t *testing.T) {
 		menu:      ui.NewMenu(),
 	}
 
-	// Simulate what happens when D is pressed
+	// Simulate what happens when x is pressed
 	selected := h.list.GetSelectedInstance()
 	require.NotNil(t, selected)
 
