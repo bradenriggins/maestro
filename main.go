@@ -25,6 +25,8 @@ var (
 	programFlag      string
 	autoYesFlag      bool
 	daemonFlag       bool
+	freshFlag        bool
+	noSafetyNetFlag  bool
 	taskFlag         string
 	statusFilterFlag string
 	linesFlag        int
@@ -77,7 +79,7 @@ var (
 				log.ErrorLog.Printf("failed to stop daemon: %v", err)
 			}
 
-			return app.Run(ctx, program, autoYes)
+			return app.Run(ctx, program, autoYes, freshFlag, noSafetyNetFlag)
 		},
 	}
 
@@ -238,6 +240,8 @@ func init() {
 		"[experimental] If enabled, all instances will automatically accept prompts")
 	rootCmd.Flags().BoolVar(&daemonFlag, "daemon", false, "Run a program that loads all sessions"+
 		" and runs autoyes mode on them.")
+	rootCmd.Flags().BoolVar(&freshFlag, "fresh", false, "Start fresh, don't resume previous session")
+	rootCmd.Flags().BoolVar(&noSafetyNetFlag, "no-safety-net", false, "Skip git stash and session start tag")
 
 	// Hide the daemonFlag as it's only for internal use
 	err := rootCmd.Flags().MarkHidden("daemon")

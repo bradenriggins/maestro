@@ -5,6 +5,7 @@ import (
 	"claude-conductor/keys"
 	"claude-conductor/log"
 	"claude-conductor/pkg/accounts"
+	"claude-conductor/pkg/notify"
 	"claude-conductor/pkg/orchestration"
 	"claude-conductor/session"
 	"claude-conductor/session/git"
@@ -13,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -27,9 +29,9 @@ import (
 const GlobalInstanceLimit = 10
 
 // Run is the main entrypoint into the application.
-func Run(ctx context.Context, program string, autoYes bool) error {
+func Run(ctx context.Context, program string, autoYes bool, fresh bool, noSafetyNet bool) error {
 	p := tea.NewProgram(
-		newHome(ctx, program, autoYes),
+		newHome(ctx, program, autoYes, fresh, noSafetyNet),
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(), // Mouse scroll
 	)
@@ -55,6 +57,8 @@ const (
 	stateQuickDispatch
 	// stateLogViewer is the state when the log viewer overlay is displayed.
 	stateLogViewer
+	// stateReview is the state when the review overlay is displayed.
+	stateReview
 )
 
 type home struct {
@@ -113,10 +117,17 @@ type home struct {
 	orchestrationOverlay *overlay.OrchestrationOverlay
 	quickDispatchOverlay *overlay.QuickDispatchOverlay
 	logViewerOverlay     *overlay.LogViewerOverlay
+	reviewOverlay        *overlay.ReviewOverlay
 	statusBar            *ui.StatusBar
 
 	// windowWidth stores the last known terminal width for overlay sizing
 	windowWidth int
+
+	// Session persistence and git safety net
+	sessionStartedAt string
+	stashRef         string
+	startTag         string
+	conflictBanner   string
 
 	// lastReconcileTime tracks the wall-clock time of the last reconciliation
 	// tick so we can detect wake-from-sleep gaps.
@@ -126,7 +137,7 @@ type home struct {
 	lastOutputChange map[string]time.Time
 }
 
-func newHome(ctx context.Context, program string, autoYes bool) *home {
+func newHome(ctx context.Context, program string, autoYes bool, fresh bool, noSafetyNet bool) *home {
 	// Load application config
 	appConfig := config.LoadConfig()
 
@@ -187,6 +198,19 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 		}
 	}
 
+	// Git safety net
+	if conductorCfg != nil && !noSafetyNet {
+		repoDir, _ := filepath.Abs(".")
+		safetyResult, err := orchestration.SetupGitSafetyNet(repoDir)
+		if err != nil {
+			log.ErrorLog.Printf("git safety net: %v", err)
+		} else {
+			h.stashRef = safetyResult.StashRef
+			h.startTag = safetyResult.StartTag
+			h.sessionStartedAt = orchestration.NowISO()
+		}
+	}
+
 	return h
 }
 
@@ -241,6 +265,8 @@ func (m *home) Init() tea.Cmd {
 		},
 		tickUpdateMetadataCmd(m.snapshotActiveInstances()),
 		reconcileTickCmd(),
+		sessionSaveTickCmd(),
+		conflictCheckTickCmd(),
 	)
 }
 
@@ -293,6 +319,14 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(msg.result.StatusCorrected) > 0 {
 				log.InfoLog.Printf("reconciliation: corrected status files: %v", msg.result.StatusCorrected)
 			}
+			// Notify on dead sessions
+			for _, name := range msg.result.DeadSessions {
+				notify.NotifyTaskFailed(name, "worker session died")
+			}
+			// Notify on failed tasks
+			for _, taskID := range msg.result.FailedTasks {
+				notify.NotifyTaskFailed("", fmt.Sprintf("task %s failed", taskID))
+			}
 		}
 		// Write updated registry on the main loop (no contention with updateRegistry)
 		if msg.registry != nil {
@@ -310,6 +344,32 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.lastReconcileTime = time.Now()
 		return m, nil
+	case sessionSaveTickMsg:
+		if m.conductorConfig != nil {
+			m.saveSessionState()
+		}
+		return m, sessionSaveTickCmd()
+	case conflictCheckTickMsg:
+		if m.conductorConfig != nil {
+			worktrees := make(map[string]string)
+			for _, inst := range m.list.GetInstances() {
+				if inst.Account != "" && inst.GetWorktreePath() != "" {
+					worktrees[inst.Title] = inst.GetWorktreePath()
+				}
+			}
+			conflicts := orchestration.DetectConflicts(worktrees)
+			if len(conflicts) > 0 {
+				var parts []string
+				for _, c := range conflicts {
+					parts = append(parts, fmt.Sprintf("%s are both editing %s",
+						strings.Join(c.Workers, " and "), c.FilePath))
+				}
+				m.conflictBanner = "⚠ " + strings.Join(parts, "; ")
+			} else {
+				m.conflictBanner = ""
+			}
+		}
+		return m, conflictCheckTickCmd()
 	case metadataUpdateDoneMsg:
 		for _, r := range msg.results {
 			if r.updated {
@@ -423,7 +483,44 @@ func (m *home) handleQuit() (tea.Model, tea.Cmd) {
 		return m, m.handleError(err)
 	}
 	m.updateRegistry()
+
+	if m.conductorConfig != nil {
+		m.saveSessionState()
+
+		// Git safety teardown — log summary
+		repoDir, _ := filepath.Abs(".")
+		summary := orchestration.TeardownGitSafetyNet(repoDir, m.startTag, m.stashRef)
+		if summary != "" {
+			log.InfoLog.Printf("git safety net summary:\n%s", summary)
+		}
+	}
+
 	return m, tea.Quit
+}
+
+// saveSessionState persists the current session state for auto-resume.
+func (m *home) saveSessionState() {
+	repoDir, _ := filepath.Abs(".")
+	var instances []orchestration.SessionInstance
+	for _, inst := range m.list.GetInstances() {
+		if inst.Account != "" {
+			instances = append(instances, orchestration.SessionInstance{
+				Title:   inst.Title,
+				Account: inst.Account,
+				Branch:  inst.Branch,
+			})
+		}
+	}
+	state := &orchestration.SessionState{
+		RepoPath:  repoDir,
+		StartedAt: m.sessionStartedAt,
+		StashRef:  m.stashRef,
+		StartTag:  m.startTag,
+		Instances: instances,
+	}
+	if err := orchestration.SaveSession(state); err != nil {
+		log.ErrorLog.Printf("session save: %v", err)
+	}
 }
 
 // updateRegistry writes the current instance state to registry.json for
@@ -496,7 +593,8 @@ func (m *home) handleMenuHighlighting(msg tea.KeyMsg) (cmd tea.Cmd, returnEarly 
 		return nil, false
 	}
 	if m.state == statePrompt || m.state == stateHelp || m.state == stateConfirm ||
-		m.state == stateOrchestration || m.state == stateQuickDispatch || m.state == stateLogViewer {
+		m.state == stateOrchestration || m.state == stateQuickDispatch || m.state == stateLogViewer ||
+		m.state == stateReview {
 		return nil, false
 	}
 	// If it's in the global keymap, we should try to highlight it.
@@ -758,6 +856,34 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		return m, nil
 	}
 
+	if m.state == stateReview {
+		if m.reviewOverlay.HandleKeyPress(msg) {
+			action := m.reviewOverlay.GetAction()
+			m.reviewOverlay = nil
+			m.state = stateDefault
+
+			switch action {
+			case overlay.ReviewApprove:
+				// Merge the worker's branch
+				selected := m.list.GetSelectedInstance()
+				if selected != nil {
+					branch := selected.Branch
+					title := selected.Title
+					go func() {
+						cmd := exec.Command("git", "merge", "--no-ff", branch,
+							"-m", fmt.Sprintf("conductor: merge %s", title))
+						cmd.Dir = "."
+						cmd.Run()
+					}()
+				}
+			case overlay.ReviewEdit:
+				// Could open a prompt overlay to re-dispatch — for now just return to default
+			}
+			return m, nil
+		}
+		return m, nil
+	}
+
 	if m.state == stateQuickDispatch {
 		if msg.String() == "ctrl+c" {
 			m.quickDispatchOverlay = nil
@@ -989,29 +1115,43 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		if selected == nil || selected.Status == session.Loading {
 			return m, nil
 		}
-		if err := selected.Resume(); err != nil {
-			return m, m.handleError(err)
-		}
-		if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
-			return m, m.handleError(err)
-		}
-		m.updateRegistry()
-		// Regenerate CLAUDE.md on resume (reflects current worker list)
-		if selected.Account != "" {
-			conductorDir, _ := accounts.ConductorDir()
-			worktreePath := selected.GetWorktreePath()
-			if worktreePath != "" && conductorDir != "" {
-				ctx := accounts.CLAUDEMDContext{
-					InstanceName:   selected.Title,
-					AccountName:    selected.Account,
-					Role:           selected.Role,
-					ConductorDir:   conductorDir,
-					StatusFilePath: filepath.Join(conductorDir, "status", selected.Title+".json"),
-				}
-				accounts.GenerateCLAUDEMD(worktreePath, ctx)
+
+		// If paused, resume (existing behavior)
+		if selected.Paused() {
+			if err := selected.Resume(); err != nil {
+				return m, m.handleError(err)
 			}
+			if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
+				return m, m.handleError(err)
+			}
+			m.updateRegistry()
+			// Regenerate CLAUDE.md on resume (reflects current worker list)
+			if selected.Account != "" {
+				conductorDir, _ := accounts.ConductorDir()
+				worktreePath := selected.GetWorktreePath()
+				if worktreePath != "" && conductorDir != "" {
+					ctx := accounts.CLAUDEMDContext{
+						InstanceName:   selected.Title,
+						AccountName:    selected.Account,
+						Role:           selected.Role,
+						ConductorDir:   conductorDir,
+						StatusFilePath: filepath.Join(conductorDir, "status", selected.Title+".json"),
+					}
+					accounts.GenerateCLAUDEMD(worktreePath, ctx)
+				}
+			}
+			return m, tea.WindowSize()
 		}
-		return m, tea.WindowSize()
+
+		// If running worker with conductor config, open review overlay
+		if m.conductorConfig != nil && selected.Account != "" && selected.Role == "worker" {
+			m.reviewOverlay = overlay.NewReviewOverlay(selected.Title, selected.Branch, "main")
+			m.reviewOverlay.SetSize(m.windowWidth, 0)
+			m.state = stateReview
+			return m, nil
+		}
+
+		return m, nil
 	case keys.KeyOrchestration:
 		if m.orchestrationOverlay.IsVisible() {
 			m.orchestrationOverlay.Close()
@@ -1165,6 +1305,24 @@ type reconcileDoneMsg struct {
 func reconcileTickCmd() tea.Cmd {
 	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
 		return reconcileTickMsg{}
+	})
+}
+
+// sessionSaveTickMsg triggers a periodic session state save.
+type sessionSaveTickMsg struct{}
+
+func sessionSaveTickCmd() tea.Cmd {
+	return tea.Tick(30*time.Second, func(t time.Time) tea.Msg {
+		return sessionSaveTickMsg{}
+	})
+}
+
+// conflictCheckTickMsg triggers a periodic conflict check.
+type conflictCheckTickMsg struct{}
+
+func conflictCheckTickCmd() tea.Cmd {
+	return tea.Tick(10*time.Second, func(t time.Time) tea.Msg {
+		return conflictCheckTickMsg{}
 	})
 }
 
@@ -1342,10 +1500,24 @@ func (m *home) View() string {
 		statusBarStr = m.statusBar.Render()
 	}
 
-	viewParts := []string{
+	// Conflict banner
+	conflictBannerStr := ""
+	if m.conflictBanner != "" {
+		conflictBannerStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("226")).
+			Bold(true).
+			Padding(0, 1)
+		conflictBannerStr = conflictBannerStyle.Render(m.conflictBanner)
+	}
+
+	viewParts := []string{}
+	if conflictBannerStr != "" {
+		viewParts = append(viewParts, conflictBannerStr)
+	}
+	viewParts = append(viewParts,
 		listAndPreview,
 		m.menu.String(),
-	}
+	)
 	if statusBarStr != "" {
 		viewParts = append(viewParts, statusBarStr)
 	}
@@ -1382,6 +1554,9 @@ func (m *home) View() string {
 	}
 	if m.quickDispatchOverlay != nil {
 		return overlay.PlaceOverlay(0, 0, m.quickDispatchOverlay.Render(), mainView, true, true)
+	}
+	if m.reviewOverlay != nil {
+		return overlay.PlaceOverlay(0, 0, m.reviewOverlay.Render(), mainView, true, true)
 	}
 
 	return mainView
