@@ -53,6 +53,10 @@ var autoYesStyle = lipgloss.NewStyle().
 	Background(lipgloss.Color("#dde4f0")).
 	Foreground(lipgloss.Color("#1a1a1a"))
 
+var accountBadgeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+
+var orchStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+
 type List struct {
 	items         []*session.Instance
 	selectedIdx   int
@@ -138,15 +142,35 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 	default:
 	}
 
+	// Build role prefix (orchestrator gets a gold star, others get nothing).
+	// Track the plain-text visual width separately from the styled string.
+	var rolePrefix string
+	const rolePrefixPlain = "★ "
+	rolePrefixWidth := 0
+	if i.Role == "orchestrator" {
+		rolePrefix = orchStyle.Render("★") + " "
+		rolePrefixWidth = runewidth.StringWidth(rolePrefixPlain)
+	}
+
+	// Build account badge (dim/muted, shown after title if Account is set).
+	var badge string
+	badgeWidth := 0
+	if i.Account != "" {
+		badgePlain := fmt.Sprintf(" [%s]", i.Account)
+		badgeWidth = runewidth.StringWidth(badgePlain)
+		badge = accountBadgeStyle.Render(badgePlain)
+	}
+
 	// Cut the title if it's too long
 	titleText := i.Title
-	widthAvail := r.width - 3 - runewidth.StringWidth(prefix) - 1
+	widthAvail := r.width - 3 - runewidth.StringWidth(prefix) - 1 - rolePrefixWidth - badgeWidth
 	if widthAvail > 0 && runewidth.StringWidth(titleText) > widthAvail {
 		titleText = runewidth.Truncate(titleText, widthAvail-3, "...")
 	}
+	titleInner := fmt.Sprintf("%s %s%s", prefix, rolePrefix, titleText)
 	title := titleS.Render(lipgloss.JoinHorizontal(
 		lipgloss.Left,
-		lipgloss.Place(r.width-3, 1, lipgloss.Left, lipgloss.Center, fmt.Sprintf("%s %s", prefix, titleText)),
+		lipgloss.Place(r.width-3, 1, lipgloss.Left, lipgloss.Center, titleInner+badge),
 		" ",
 		join,
 	))
