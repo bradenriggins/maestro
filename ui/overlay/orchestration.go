@@ -188,6 +188,18 @@ func (o *OrchestrationOverlay) Render(opts ...WhitespaceOption) string {
 		}
 	}
 
+	// --- Usage section ---
+	b.WriteString("\n")
+	b.WriteString(titleStyle.Render("Usage:"))
+	b.WriteString("\n")
+	report, usageErr := orchestration.LoadUsageReport()
+	if usageErr == nil && report != nil {
+		b.WriteString(orchestration.FormatUsageSummary(report))
+	} else {
+		b.WriteString(dimStyle.Render("  (run `claude-conductor usage` to collect data)"))
+		b.WriteString("\n")
+	}
+
 	b.WriteString("\n")
 	b.WriteString(dimStyle.Render("[o/Esc] close"))
 

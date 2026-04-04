@@ -231,6 +231,25 @@ var (
 			return orchestration.RunRecall(args[0])
 		},
 	}
+
+	usageCmd = &cobra.Command{
+		Use:   "usage",
+		Short: "Show usage levels for all configured accounts",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := accounts.LoadConductorConfig()
+			if err != nil || cfg == nil {
+				return fmt.Errorf("no conductor config found — run setup first")
+			}
+			report, err := orchestration.CollectUsage(cfg)
+			if err != nil {
+				return err
+			}
+			orchestration.SaveUsageReport(report)
+			fmt.Println("Account Usage (5-hour rolling window):")
+			fmt.Print(orchestration.FormatUsageSummary(report))
+			return nil
+		},
+	}
 )
 
 func init() {
@@ -263,6 +282,7 @@ func init() {
 	rootCmd.AddCommand(tasksCmd)
 	rootCmd.AddCommand(outputCmd)
 	rootCmd.AddCommand(recallCmd)
+	rootCmd.AddCommand(usageCmd)
 }
 
 func main() {

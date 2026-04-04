@@ -301,6 +301,15 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					regPath := filepath.Join(base, "registry.json")
 					result, reg, err := orchestration.Reconcile(orchestration.RealTmuxChecker{}, regPath, store)
+
+					// Collect usage data alongside reconciliation
+					if m.conductorConfig != nil {
+						usageReport, _ := orchestration.CollectUsage(m.conductorConfig)
+						if usageReport != nil {
+							orchestration.SaveUsageReport(usageReport)
+						}
+					}
+
 					return reconcileDoneMsg{result: result, registry: reg, err: err}
 				},
 			)

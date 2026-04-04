@@ -74,6 +74,14 @@ func RunStatus(instanceFilter string) error {
 	}
 	tw.Flush()
 
+	// --- Usage section ---
+	report, usageErr := LoadUsageReport()
+	if usageErr == nil && report != nil {
+		fmt.Println()
+		fmt.Println("=== Usage ===")
+		fmt.Print(FormatUsageSummary(report))
+	}
+
 	return nil
 }
 
