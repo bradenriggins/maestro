@@ -90,6 +90,8 @@ func RunDispatch(instanceName string, taskPrompt string, redispatchTaskID string
 			return nil, &DispatchError{Code: 4, Msg: fmt.Sprintf("task %q has reached max attempts (%d)", redispatchTaskID, MaxAttempts)}
 		}
 
+		previousStatus := task.Status
+
 		task.WorkerInstance = instanceName
 		task.WorkerAccount = entry.Account
 		task.Status = StatusDispatched
@@ -104,7 +106,7 @@ func RunDispatch(instanceName string, taskPrompt string, redispatchTaskID string
 		}
 
 		// Append failure context if there was a previous error
-		if task.Error != nil && *task.Error != "" {
+		if previousStatus == StatusFailed && task.Error != nil && *task.Error != "" {
 			if err := appendFailureContext(task.PromptFile, *task.Error); err != nil {
 				return nil, fmt.Errorf("failed to append failure context: %w", err)
 			}
@@ -122,28 +124,39 @@ func RunDispatch(instanceName string, taskPrompt string, redispatchTaskID string
 		taskPrompt = task.PromptFile
 	}
 
-	// 9. Build instruction and send to tmux
-	instruction := fmt.Sprintf("Read and follow the instructions in %s", taskPrompt)
-	if err := tmuxSendKeys(entry.TmuxSession, instruction); err != nil {
-		return nil, fmt.Errorf("failed to send keys to tmux: %w", err)
-	}
+	// 9. Build instruction and retry loop
+	instruction := fmt.Sprintf("Read and execute task: %s", taskPrompt)
 
-	// 10. Poll for acknowledgment
-	acked := pollForAck(store, taskID, 30*time.Second, 2*time.Second)
-	if !acked {
-		// Timeout — mark task as timed_out
-		task, getErr := store.Get(taskID)
-		if getErr == nil {
-			task.Status = StatusTimedOut
-			_ = store.Update(task)
+	tmuxName := entry.TmuxSession
+
+	for attempt := 1; attempt <= MaxAttempts; attempt++ {
+		// Send instruction to tmux
+		if err := tmuxSendKeys(tmuxName, instruction); err != nil {
+			return nil, fmt.Errorf("failed to send keys to tmux: %w", err)
 		}
-		return nil, &DispatchError{Code: 5, Msg: fmt.Sprintf("task %q was not acknowledged within 30s", taskID)}
+
+		// Poll for acknowledgment
+		if pollForAck(store, taskID, PollTimeout, PollInterval) {
+			return &DispatchResult{TaskID: taskID, InstanceName: instanceName}, nil
+		}
+
+		// Timeout — retry or fail
+		if attempt < MaxAttempts {
+			task, getErr := store.Get(taskID)
+			if getErr == nil {
+				task.Attempts = attempt + 1
+				_ = store.Update(task)
+			}
+		}
 	}
 
-	return &DispatchResult{
-		TaskID:       taskID,
-		InstanceName: instanceName,
-	}, nil
+	// All attempts exhausted
+	task, getErr := store.Get(taskID)
+	if getErr == nil {
+		task.Status = StatusTimedOut
+		_ = store.Update(task)
+	}
+	return nil, &DispatchError{Code: 5, Msg: fmt.Sprintf("Worker '%s' did not acknowledge task %s after %d attempts. Task marked as timed_out.", instanceName, taskID, MaxAttempts)}
 }
 
 // isWorkerReady checks if a worker is idle and ready to accept a task.
@@ -192,15 +205,22 @@ func updatePromptStatusFile(promptPath, newStatusPath string) error {
 	return os.WriteFile(promptPath, []byte(strings.Join(lines, "\n")), 0600)
 }
 
-// appendFailureContext appends a failure notice to the end of a prompt file.
+// appendFailureContext inserts a failure notice after the --- separator in the prompt file.
 func appendFailureContext(promptPath, errorMsg string) error {
-	f, err := os.OpenFile(promptPath, os.O_APPEND|os.O_WRONLY, 0600)
+	data, err := os.ReadFile(promptPath)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	_, err = fmt.Fprintf(f, "\n\n--- PREVIOUS ATTEMPT FAILED ---\n%s\n", errorMsg)
-	return err
+	content := string(data)
+	separator := "\n\n---\n\n"
+	idx := strings.Index(content, separator)
+	if idx == -1 {
+		return nil
+	}
+	failureNote := fmt.Sprintf("Previous attempt failed: %s. Please try a different approach.\n\n", errorMsg)
+	insertPos := idx + len(separator)
+	newContent := content[:insertPos] + failureNote + content[insertPos:]
+	return os.WriteFile(promptPath, []byte(newContent), 0600)
 }
 
 // --- tmux helpers ---

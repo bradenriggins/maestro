@@ -5,6 +5,11 @@ import "time"
 const MaxAttempts = 3
 
 const (
+	PollInterval = 2 * time.Second
+	PollTimeout  = 30 * time.Second
+)
+
+const (
 	StatusDispatched = "dispatched"
 	StatusInProgress = "in_progress"
 	StatusCompleted  = "completed"

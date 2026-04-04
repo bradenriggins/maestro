@@ -41,7 +41,7 @@ func (s *TaskStore) taskPath(id string) string {
 
 // promptPath returns the path to a prompt text file by ID.
 func (s *TaskStore) promptPath(id string) string {
-	return filepath.Join(s.tasksDir, id+".prompt.txt")
+	return filepath.Join(s.tasksDir, id+".prompt")
 }
 
 // resultPath returns the expected path to a result file by ID.
@@ -73,7 +73,7 @@ func (s *TaskStore) Create(id, prompt, workerInstance, workerAccount, statusFile
 		ResultFile:     resultFile,
 		CreatedAt:      now,
 		UpdatedAt:      now,
-		Attempts:       0,
+		Attempts:       1,
 		DispatchedBy:   dispatchedBy,
 	}
 
@@ -81,7 +81,7 @@ func (s *TaskStore) Create(id, prompt, workerInstance, workerAccount, statusFile
 		return nil, fmt.Errorf("failed to write task file: %w", err)
 	}
 
-	header := fmt.Sprintf("Task ID: %s\nTask File: %s\nResult File: %s\nStatus File: %s\n---\n%s",
+	header := fmt.Sprintf("Task ID: %s\nTask File: %s\nResult File: %s\nStatus File: %s\n\n---\n\n%s",
 		id, taskFile, resultFile, statusFilePath, prompt)
 	if err := os.WriteFile(promptFile, []byte(header), 0600); err != nil {
 		return nil, fmt.Errorf("failed to write prompt file: %w", err)
