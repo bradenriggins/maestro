@@ -1,40 +1,40 @@
-                                                                                                                                            
-                                                                                                                                            
- Instances                                ╭───────────────────────────────╮╭───────────────────────────────╮╭───────────────────────────────
-  ★ orchestrator  · worker  (model shown a│            Preview            ││             Diff              ││            Terminal           
-                                          ├───────────────────────────────┴┘                               └┴───────────────────────────────
-  1.  worker-1 [acct-1]                  ●│                                                                                                 
-      Ꮧ-                                  │                                                                                                 
-                                          │                                                                                                 
-                                          │                                                                                                 
-                                          │                                                                                                 
-                                          │                                                                                                 
-                                          │                                                                                                 
-                                          │                                                                                                 
-                                          │                                                                                                 
-                                          │                                                                                                 
-                                          │                                                                                                 
-                                          │                                                                                                 
-                                          │                                                                                                 
-                                          │                                                                                                 
-                                          │                                                                                                 
-                                          │                                           No changes                                            
-                                          │                                                                                                 
-                                          │                                                                                                 
-                                          │                                                                                                 
-                                          │                                                                                                 
-                                          │                                                                                                 
-                                          │                                                                                                 
-                                          │                                                                                                 
-                                          │                                                                                                 
-                                          │                                                                                                 
-                                          │                                                                                                 
-                                          │                                                                                                 
-                                          │                                                                                                 
-                                          │                                                                                                 
-                                          │                                                                                                 
-                                          │                                                                                                 
-                                          │                                                                                                 
-                                          └─────────────────────────────────────────────────────────────────────────────────────────────────
-                          n new • x kill │ ↵ attach • p pause • shift+↑ scroll │ tab switch tab • ? help • q quit                           
+ Workflows             │                                                       ╭────────────────────────╮╭────────────────────────╮╭────────
+                       │                                                       │        Preview         ││          Diff          ││        
+ › Sessions -          │ Instances                                             ├────────────────────────┴┘                        └┴────────
+ inspect...            │  ★ orchestrator  · worker  (model shown after account)│                                                            
+   Dispatch - send     │                                                       │                                                            
+ wo...                 │  1.  worker-1 [acct-1]            ●                   │                                                            
+   Review - triage     │      Ꮧ-                                               │                                                            
+ co...                 │                                                       │                                                            
+   History - browse    │                                                       │                                                            
+ p...                  │                                                       │                                                            
+   System - usage,     │                                                       │                                                            
+ lo...                 │                                                       │                                                            
+                       │                                                       │                                                            
+                       │                                                       │                                                            
+                       │                                                       │                                                            
+                       │                                                       │                                                            
+                       │                                                       │                                                            
+                       │                                                       │                                                            
+                       │                                                       │                                 No changes                 
+                       │                                                       │                                                            
+                       │                                                       │                                                            
+                       │                                                       │                                                            
+                       │                                                       │                                                            
+                       │                                                       │                                                            
+                       │                                                       │                                                            
+                       │                                                       │                                                            
+                       │                                                       │                                                            
+                       │                                                       │                                                            
+                       │                                                       │                                                            
+                       │                                                       │                                                            
+                       │                                                       │                                                            
+                       │                                                       │                                                            
+                       │                                                       │                                                            
+                       │                                                       │                                                            
+                       │                                                       │                                                            
+                       │                                                       │                                                            
+                       │                                                       │                                                            
+                       │                                                       └────────────────────────────────────────────────────────────
+Enter open  p pause  Tab switch  Shift+↑ scroll  / dispatch  h history  ? system                                                            
                                                                                                                                             

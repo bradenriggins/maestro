@@ -15,7 +15,6 @@ import (
 	"maestro/config"
 	"maestro/pkg/accounts"
 	"maestro/session"
-	"maestro/ui/overlay"
 )
 
 var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
@@ -74,17 +73,16 @@ func TestUIAuditQuickDispatchNoWorkersShowsActionableRecovery(t *testing.T) {
 	h.conductorConfig = &accounts.ConductorConfig{}
 
 	pressKey(t, h, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
-	require.Equal(t, stateQuickDispatch, h.state)
+	require.Equal(t, workflowDispatch, h.currentWorkflow())
+	require.NotNil(t, h.dispatchPanel)
 
 	pressKey(t, h, tea.KeyMsg{Type: tea.KeyEnter})
-	view := ansiRegex.ReplaceAllString(h.quickDispatchOverlay.Render(), "")
-	require.Contains(t, view, "Quick Dispatch")
-	require.Contains(t, view, "No workers available. Press Esc, then 'n' to create an instance")
-	require.Contains(t, view, "or 'o' for")
+	view := ansiRegex.ReplaceAllString(renderPlain(h), "")
+	require.Contains(t, view, "Dispatch Workflow")
+	require.Contains(t, view, "No workers are available yet. Start a worker or try again later.")
 
 	pressKey(t, h, tea.KeyMsg{Type: tea.KeyEsc})
-	require.Equal(t, stateDefault, h.state)
-	require.Nil(t, h.quickDispatchOverlay)
+	require.Equal(t, workflowSessions, h.currentWorkflow())
 }
 
 func TestUIAuditQuickDispatchListsWorkerAndAcceptsTaskInput(t *testing.T) {
@@ -93,7 +91,7 @@ func TestUIAuditQuickDispatchListsWorkerAndAcceptsTaskInput(t *testing.T) {
 	addAutomationInstance(t, h, automationInstanceOpts{title: "worker-1", role: string(accounts.RoleWorker), account: "acct-1"})
 
 	pressKey(t, h, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
-	require.Equal(t, stateQuickDispatch, h.state)
+	require.Equal(t, workflowDispatch, h.currentWorkflow())
 
 	for _, r := range "check linting" {
 		if r == ' ' {
@@ -106,7 +104,7 @@ func TestUIAuditQuickDispatchListsWorkerAndAcceptsTaskInput(t *testing.T) {
 	view := renderPlain(h)
 	require.Contains(t, view, "worker-1")
 	require.Contains(t, view, "check linting")
-	require.Contains(t, view, "[Enter] dispatch  [Esc] cancel")
+	require.Contains(t, view, "[Enter] dispatch  [Esc] sessions")
 }
 
 func TestUIAuditQuickDispatchFitsSmallViewportWithLongNames(t *testing.T) {
@@ -128,9 +126,9 @@ func TestUIAuditQuickDispatchFitsSmallViewportWithLongNames(t *testing.T) {
 		pressKey(t, h, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 
-	require.Equal(t, stateQuickDispatch, h.state)
+	require.Equal(t, workflowDispatch, h.currentWorkflow())
 	assertRenderFitsViewport(t, h.View(), 80, 20)
-	require.Contains(t, renderPlain(h), "Quick Dispatch")
+	require.Contains(t, renderPlain(h), "Dispatch Workflow")
 }
 
 func TestUIAuditLogViewerToggleIsAutomatable(t *testing.T) {
@@ -164,16 +162,15 @@ func TestUIAuditReviewEditTransitionsIntoQuickDispatch(t *testing.T) {
 	h.conductorConfig = &accounts.ConductorConfig{}
 	addAutomationInstance(t, h, automationInstanceOpts{title: "worker-1", branch: "feat/ui-audit", role: string(accounts.RoleWorker), account: "acct-1"})
 
-	h.reviewOverlay = overlay.NewReviewOverlay("worker-1", "feat/ui-audit", "main")
-	h.reviewOverlay.SetSize(140, 40)
-	h.state = stateReview
+	h.showReviewWorkflow("worker-1", "feat/ui-audit", "main")
 
 	pressKey(t, h, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
-	require.Equal(t, stateQuickDispatch, h.state)
-	require.NotNil(t, h.quickDispatchOverlay)
+	require.Equal(t, workflowDispatch, h.currentWorkflow())
+	require.NotNil(t, h.dispatchPanel)
+	require.Equal(t, "worker-1", h.dispatchPanel.Worker())
 
 	view := renderPlain(h)
-	require.Contains(t, view, "Quick Dispatch")
+	require.Contains(t, view, "Dispatch Workflow")
 	require.Contains(t, view, "worker-1")
 }
 
@@ -207,7 +204,7 @@ func TestUIAuditPausedTerminalShowsRecoveryGuidance(t *testing.T) {
 	require.NoError(t, h.tabbedWindow.UpdateTerminal(inst))
 
 	view := renderPlain(h)
-	require.Contains(t, view, "Terminal")
+	require.Contains(t, view, "worker-1")
 	require.Contains(t, view, "Session is paused. Resume to use terminal.")
 }
 

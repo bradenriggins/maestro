@@ -106,6 +106,33 @@ func CollectStatusBarCounts() (TaskCounts, error) {
 	return counts, nil
 }
 
+// Summary returns a compact, single-line summary suitable for the shell action bar.
+func (s *StatusBar) Summary() string {
+	total := s.cachedCounts.Total
+	if total == 0 {
+		return ""
+	}
+
+	var segments []string
+	segments = append(segments, fmt.Sprintf("%d/%d tasks", s.cachedCounts.Completed, total))
+	if s.cachedCounts.InProgress > 0 {
+		segments = append(segments, fmt.Sprintf("%d active", s.cachedCounts.InProgress))
+	}
+	if s.cachedCounts.Pending > 0 {
+		segments = append(segments, fmt.Sprintf("%d pending", s.cachedCounts.Pending))
+	}
+	if s.cachedCounts.Blocked > 0 {
+		segments = append(segments, fmt.Sprintf("%d blocked", s.cachedCounts.Blocked))
+	}
+	if s.cachedCounts.Failed > 0 {
+		segments = append(segments, fmt.Sprintf("%d failed", s.cachedCounts.Failed))
+	}
+	if s.cachedCounts.Stalled > 0 {
+		segments = append(segments, fmt.Sprintf("%d stalled", s.cachedCounts.Stalled))
+	}
+	return strings.Join(segments, " • ")
+}
+
 // Render returns the rendered status bar string. It is intentionally
 // side-effect free and only reads from the cache last set by SetCounts.
 func (s *StatusBar) Render() string {

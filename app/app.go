@@ -122,7 +122,12 @@ type home struct {
 	quickDispatchOverlay *overlay.QuickDispatchOverlay
 	logViewerOverlay     *overlay.LogViewerOverlay
 	reviewOverlay        *overlay.ReviewOverlay
+	workflowNav          *ui.WorkflowNav
 	statusBar            *ui.StatusBar
+	dispatchPanel        *ui.DispatchPanel
+	reviewPanel          *ui.ReviewPanel
+	historyPanel         *ui.HistoryPanel
+	activeWorkflow       workflowID
 
 	// windowWidth stores the last known terminal width for overlay sizing
 	windowWidth int
@@ -202,13 +207,16 @@ func newHome(ctx context.Context, program string, autoYes bool, fresh bool, noSa
 		conductorConfig:      conductorCfg,
 		orchestrationOverlay: orchOverlay,
 		logViewerOverlay:     logOverlay,
+		workflowNav:          ui.NewWorkflowNav(),
 		statusBar:            statusBar,
+		activeWorkflow:       workflowSessions,
 		lastReconcileTime:    time.Now(),
 		lastOutputChange:     make(map[string]time.Time),
 		stalledInstances:     make(map[string]time.Time),
 		setupNeeded:          setupNeeded,
 	}
 	h.list = ui.NewList(&h.spinner, autoYes)
+	h.menu.SetSummary(statusBar.Summary())
 
 	// Load saved instances
 	instances, err := storage.LoadInstances()
@@ -248,21 +256,8 @@ func newHome(ctx context.Context, program string, autoYes bool, fresh bool, noSa
 func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 	m.windowWidth = msg.Width
 	m.windowHeight = msg.Height
-
-	layout := m.currentLayout()
-	listWidth, tabsWidth := splitContentWidth(layout.content.W)
-
-	m.tabbedWindow.SetSize(tabsWidth, layout.content.H)
-	m.list.SetSize(listWidth, layout.content.H)
-
+	m.syncShellLayout()
 	m.sizeOverlays()
-
-	previewWidth, previewHeight := m.tabbedWindow.GetPreviewSize()
-	if err := m.list.SetSessionPreviewSize(previewWidth, previewHeight); err != nil {
-		log.ErrorLog.Print(err)
-	}
-	m.menu.SetSize(layout.menu.W, layout.menu.H)
-	m.errBox.SetSize(layout.err.W, layout.err.H)
 
 	if m.orchestrationOverlay != nil {
 		m.orchestrationOverlay.SetSize(msg.Width, msg.Height)
@@ -270,8 +265,14 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 	if m.logViewerOverlay != nil {
 		m.logViewerOverlay.SetSize(msg.Width, msg.Height)
 	}
-	if m.statusBar != nil {
-		m.statusBar.SetWidth(layout.status.W)
+	if m.dispatchPanel != nil {
+		m.dispatchPanel.SetSize(msg.Width, msg.Height)
+	}
+	if m.reviewPanel != nil {
+		m.reviewPanel.SetSize(msg.Width, msg.Height)
+	}
+	if m.historyPanel != nil {
+		m.historyPanel.SetSize(msg.Width, msg.Height)
 	}
 }
 
@@ -293,6 +294,8 @@ func (m *home) Init() tea.Cmd {
 }
 
 func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	defer m.syncShellLayout()
+
 	// Guard against state desync: if an overlay was supposed to be shown but its
 	// backing field is nil, reset to stateDefault so View() renders correctly.
 	// This is the right place for state mutation — never inside View().
@@ -481,6 +484,9 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return uiCacheRefreshMsg{apply: func() {
 						if sb != nil {
 							sb.SetCounts(sbCounts)
+							if m.menu != nil {
+								m.menu.SetSummary(sb.Summary())
+							}
 						}
 						if orchVisible {
 							orch.SetCachedData(orchData)
@@ -731,13 +737,33 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.orchestrationOverlay.SetPreviewContent(msg.taskID, msg.content)
 		}
 		return m, nil
+	case historyLoadedMsg:
+		if m.historyPanel == nil {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.historyPanel.SetError(msg.err)
+			return m, nil
+		}
+		m.historyPanel.SetTasks(msg.tasks)
+		return m, nil
 	case promptSentMsg:
 		// No-op: prompt was sent asynchronously; log for debugging.
 		log.InfoLog.Printf("prompt sent to instance %q", msg.name)
 		return m, nil
 	case quickDispatchResultMsg:
+		if m.dispatchPanel != nil {
+			m.dispatchPanel.SetSubmitting(false)
+		}
 		if msg.err != nil {
+			if m.dispatchPanel != nil {
+				m.dispatchPanel.SetErrorMessage("Dispatch failed: " + msg.err.Error())
+			}
 			return m, m.handleError(fmt.Errorf("quick dispatch failed: %w", msg.err))
+		}
+		if m.dispatchPanel != nil {
+			m.dispatchPanel.ClearTask()
+			m.dispatchPanel.SetStatusMessage(fmt.Sprintf("Dispatched task %s", msg.taskID))
 		}
 		log.InfoLog.Printf("quick dispatch succeeded: task %q", msg.taskID)
 		return m, nil
@@ -1056,6 +1082,7 @@ func (m *home) instanceChanged() tea.Cmd {
 	m.tabbedWindow.UpdateDiff(selected)
 	m.tabbedWindow.SetInstance(selected)
 	// Update menu with current instance
+	m.menu.SetActiveTab(m.tabbedWindow.GetActiveTab())
 	m.menu.SetInstance(selected)
 
 	// Call UpdatePreview only for states that don't require subprocess I/O (nil / Loading / Paused).
@@ -1075,7 +1102,7 @@ func (m *home) instanceChanged() tea.Cmd {
 
 type keyupMsg struct{}
 
-// keydownCallback clears the menu option highlighting after 500ms.
+// keydownCallback clears the footer action highlight after 500ms.
 func (m *home) keydownCallback(name keys.KeyName) tea.Cmd {
 	m.menu.Keydown(name)
 	return func() tea.Msg {
@@ -1179,6 +1206,11 @@ type promptSentMsg struct{ name string }
 type quickDispatchResultMsg struct {
 	taskID string
 	err    error
+}
+
+type historyLoadedMsg struct {
+	tasks []*orchestration.Task
+	err   error
 }
 
 // pauseCompleteMsg is sent when instance.Pause() finishes in a background goroutine.
@@ -1414,84 +1446,16 @@ func (m *home) handleBulkRetry() (tea.Model, tea.Cmd) {
 }
 
 func (m *home) View() string {
-	layout := m.currentLayout()
-	listWidth, tabsWidth := splitContentWidth(layout.content.W)
+	layout := newLayoutSpec(m.windowWidth, m.windowHeight, m.shellBannerHeight(), m.shellFooterHeight())
+	mainContent := m.renderMainPane(layout.main.Width, layout.main.Height)
+	mainView := m.renderShell(layout, mainContent)
 
-	var content string
-	if m.list.NumInstances() == 0 && m.state == stateDefault {
-		emptyMsg := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("245")).
-			Align(lipgloss.Center).
-			Render("No instances yet\n\nPress 'n' to create your first instance\nPress '?' for help\nPress 'q' to quit")
-		content = fitBlockToRect(lipgloss.Place(layout.content.W, layout.content.H, lipgloss.Center, lipgloss.Center, emptyMsg), layout.content)
-	} else {
-		listBlock := fitBlock(m.list.String(), listWidth, layout.content.H)
-		previewBlock := fitBlock(m.tabbedWindow.String(), tabsWidth, layout.content.H)
-		content = fitBlockToRect(lipgloss.JoinHorizontal(lipgloss.Top, listBlock, previewBlock), layout.content)
+	if banners := m.renderShellBanners(layout.viewport.Width); len(banners) > 0 {
+		viewParts := make([]string, 0, len(banners)+1)
+		viewParts = append(viewParts, banners...)
+		viewParts = append(viewParts, mainView)
+		mainView = lipgloss.JoinVertical(lipgloss.Left, viewParts...)
 	}
-
-	// Add the status bar when multi-account mode is active.
-	statusBarStr := ""
-	if m.conductorConfig != nil && m.statusBar != nil {
-		statusBarStr = m.statusBar.Render()
-	}
-
-	// Setup-needed banner shown when no account config exists on first run.
-	setupBannerStr := ""
-	if m.setupNeeded {
-		setupBannerStyle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("214")).
-			Bold(true).
-			Padding(0, 1)
-		setupBannerStr = setupBannerStyle.Render(
-			"Multi-account orchestration is not configured. Run `maestro setup` to enable it.")
-	}
-
-	// Conflict banner
-	conflictBannerStr := ""
-	if m.conflictBanner != "" {
-		conflictBannerStyle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("226")).
-			Bold(true).
-			Padding(0, 1)
-		conflictBannerStr = conflictBannerStyle.Render(m.conflictBanner)
-	}
-
-	// Wake-from-sleep banner
-	wakeBannerStr := ""
-	if m.wakeBanner != "" {
-		wakeBannerStyle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("214")).
-			Bold(true).
-			Padding(0, 1)
-		wakeBannerStr = wakeBannerStyle.Render(m.wakeBanner)
-	}
-
-	viewParts := []string{}
-	if layout.setupBanner.H > 0 {
-		viewParts = append(viewParts, fitBlockToRect(setupBannerStr, layout.setupBanner))
-	}
-	if layout.conflictBanner.H > 0 {
-		viewParts = append(viewParts, fitBlockToRect(conflictBannerStr, layout.conflictBanner))
-	}
-	if layout.wakeBanner.H > 0 {
-		viewParts = append(viewParts, fitBlockToRect(wakeBannerStr, layout.wakeBanner))
-	}
-	if layout.content.H > 0 {
-		viewParts = append(viewParts, content)
-	}
-	if layout.menu.H > 0 {
-		viewParts = append(viewParts, fitBlockToRect(m.menu.String(), layout.menu))
-	}
-	if layout.status.H > 0 {
-		viewParts = append(viewParts, fitBlockToRect(statusBarStr, layout.status))
-	}
-	if layout.err.H > 0 {
-		viewParts = append(viewParts, fitBlockToRect(m.errBox.String(), layout.err))
-	}
-
-	mainView := fitBlock(strings.Join(viewParts, "\n"), layout.viewport.W, layout.viewport.H)
-
 	if m.state == statePrompt {
 		if m.textInputOverlay == nil {
 			// State desync: overlay is nil but state says prompt. Render safely without
@@ -1532,7 +1496,7 @@ func (m *home) View() string {
 	return mainView
 }
 
-func (m *home) currentLayout() layoutSpec {
+func (m *home) currentLayout() viewportLayout {
 	return computeLayout(m.windowWidth, m.windowHeight, layoutFlags{
 		setupBanner:    m.setupNeeded,
 		conflictBanner: m.conflictBanner != "",

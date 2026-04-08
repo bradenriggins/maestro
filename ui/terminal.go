@@ -13,12 +13,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-var terminalPaneStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#dddddd"})
-
-var terminalFooterStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.AdaptiveColor{Light: "#808080", Dark: "#808080"})
-
 // terminalSession holds a cached tmux session for a specific instance.
 type terminalSession struct {
 	tmuxSession  *tmux.TmuxSession
@@ -50,12 +44,12 @@ func NewTerminalPane() *TerminalPane {
 func (t *TerminalPane) SetSize(width, height int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.width = width
-	t.height = height
-	t.viewport.Width = width
-	t.viewport.Height = height
+	t.width = clampDimension(width)
+	t.height = clampDimension(height)
+	t.viewport.Width = t.width
+	t.viewport.Height = t.height
 	if s, ok := t.sessions[t.currentTitle]; ok && s.tmuxSession != nil {
-		if err := s.tmuxSession.SetDetachedSize(width, height); err != nil {
+		if err := s.tmuxSession.SetDetachedSize(t.width, t.height); err != nil {
 			log.InfoLog.Printf("terminal pane: failed to set detached size: %v", err)
 		}
 	}
@@ -257,30 +251,7 @@ func (t *TerminalPane) String() string {
 	content := t.content
 
 	if fallback {
-		// 3 = tab bar height (border + padding + text), 4 = window style frame (top/bottom border + padding)
-		availableHeight := height - 3 - 4
-		fallbackLines := len(strings.Split(fallbackText, "\n"))
-		totalPadding := availableHeight - fallbackLines
-		topPadding := 0
-		bottomPadding := 0
-		if totalPadding > 0 {
-			topPadding = totalPadding / 2
-			bottomPadding = totalPadding - topPadding
-		}
-
-		var lines []string
-		if topPadding > 0 {
-			lines = append(lines, strings.Repeat("\n", topPadding))
-		}
-		lines = append(lines, fallbackText)
-		if bottomPadding > 0 {
-			lines = append(lines, strings.Repeat("\n", bottomPadding))
-		}
-
-		return terminalPaneStyle.
-			Width(width).
-			Align(lipgloss.Center).
-			Render(strings.Join(lines, ""))
+		return renderSurfaceFallback(terminalPaneStyle, width, height, fallbackText)
 	}
 
 	// Normal mode: show captured content
@@ -296,7 +267,7 @@ func (t *TerminalPane) String() string {
 	}
 
 	contentStr := strings.Join(lines, "\n")
-	return terminalPaneStyle.Width(width).Render(contentStr)
+	return renderSurfaceContent(terminalPaneStyle, width, height, contentStr)
 }
 
 // enterScrollMode captures the full terminal history and enters scroll mode.

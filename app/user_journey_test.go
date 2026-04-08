@@ -8,7 +8,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"maestro/pkg/accounts"
-	"maestro/ui/overlay"
 )
 
 func TestUserJourneyPromptResizeCancelRetryRemainsRecoverable(t *testing.T) {
@@ -42,7 +41,7 @@ func TestUserJourneyPromptResizeCancelRetryRemainsRecoverable(t *testing.T) {
 	pressKey(t, h, tea.KeyMsg{Type: tea.KeyEnter})
 	require.Equal(t, statePrompt, h.state)
 	view = renderPlain(h)
-	require.Contains(t, view, "journey-two")
+	require.Contains(t, view, "Enter prompt")
 	require.NotContains(t, view, "journey-one")
 }
 
@@ -51,12 +50,10 @@ func TestUserJourneyReviewEditResizeCancelReopenHasNoStaleTask(t *testing.T) {
 	h.conductorConfig = &accounts.ConductorConfig{}
 	addAutomationInstance(t, h, automationInstanceOpts{title: "worker-1", branch: "feat/review", role: string(accounts.RoleWorker), account: "acct-1"})
 
-	h.reviewOverlay = overlay.NewReviewOverlay("worker-1", "feat/review", "main")
-	h.reviewOverlay.SetSize(140, 40)
-	h.state = stateReview
+	h.showReviewWorkflow("worker-1", "feat/review", "main")
 
 	pressKey(t, h, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
-	require.Equal(t, stateQuickDispatch, h.state)
+	require.Equal(t, workflowDispatch, h.currentWorkflow())
 
 	for _, r := range "tighten copy" {
 		if r == ' ' {
@@ -67,15 +64,15 @@ func TestUserJourneyReviewEditResizeCancelReopenHasNoStaleTask(t *testing.T) {
 	}
 	sendWindowSize(t, h, 104, 28)
 	view := renderPlain(h)
-	require.Contains(t, view, "Quick Dispatch")
+	require.Contains(t, view, "Dispatch Workflow")
 	require.Contains(t, view, "tighten copy")
 
 	pressKey(t, h, tea.KeyMsg{Type: tea.KeyEsc})
-	require.Equal(t, stateDefault, h.state)
+	require.Equal(t, workflowSessions, h.currentWorkflow())
 	require.Nil(t, h.quickDispatchOverlay)
 
 	pressKey(t, h, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
-	require.Equal(t, stateQuickDispatch, h.state)
+	require.Equal(t, workflowDispatch, h.currentWorkflow())
 	view = renderPlain(h)
 	require.Contains(t, view, "worker-1")
 	require.NotContains(t, view, "tighten copy")
@@ -145,7 +142,7 @@ func TestUserJourneyChaosNavigationLeavesAppRecoverable(t *testing.T) {
 	view := renderPlain(h)
 	require.Equal(t, stateDefault, h.state)
 	require.Contains(t, view, "worker-1")
-	require.Contains(t, view, "Terminal")
+	require.Contains(t, view, "Instance is not started yet.")
 }
 
 func sendWindowSize(t *testing.T, h *home, width, height int) {
