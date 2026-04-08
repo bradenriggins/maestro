@@ -9,9 +9,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-var previewPaneStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#dddddd"})
-
 type PreviewPane struct {
 	width  int
 	height int
@@ -35,10 +32,10 @@ func NewPreviewPane() *PreviewPane {
 }
 
 func (p *PreviewPane) SetSize(width, maxHeight int) {
-	p.width = width
-	p.height = maxHeight
-	p.viewport.Width = width
-	p.viewport.Height = maxHeight
+	p.width = clampDimension(width)
+	p.height = clampDimension(maxHeight)
+	p.viewport.Width = p.width
+	p.viewport.Height = p.height
 }
 
 // setFallbackState sets the preview state with fallback text and a message
@@ -87,9 +84,7 @@ func (p *PreviewPane) UpdateContent(instance *session.Instance) error {
 		}
 
 		// Set content in the viewport
-		footer := lipgloss.NewStyle().
-			Foreground(lipgloss.AdaptiveColor{Light: "#808080", Dark: "#808080"}).
-			Render("ESC to exit scroll mode")
+		footer := terminalFooterStyle.Render("ESC to exit scroll mode")
 
 		p.viewport.SetContent(lipgloss.JoinVertical(lipgloss.Left, content, footer))
 	} else if !p.isScrolling {
@@ -135,36 +130,7 @@ func (p *PreviewPane) String() string {
 	}
 
 	if p.previewState.fallback {
-		// Calculate available height for fallback text
-		availableHeight := p.height - 3 - 4 // 2 for borders, 1 for margin, 1 for padding
-
-		// Count the number of lines in the fallback text
-		fallbackLines := len(strings.Split(p.previewState.text, "\n"))
-
-		// Calculate padding needed above and below to center the content
-		totalPadding := availableHeight - fallbackLines
-		topPadding := 0
-		bottomPadding := 0
-		if totalPadding > 0 {
-			topPadding = totalPadding / 2
-			bottomPadding = totalPadding - topPadding // accounts for odd numbers
-		}
-
-		// Build the centered content
-		var lines []string
-		if topPadding > 0 {
-			lines = append(lines, strings.Repeat("\n", topPadding))
-		}
-		lines = append(lines, p.previewState.text)
-		if bottomPadding > 0 {
-			lines = append(lines, strings.Repeat("\n", bottomPadding))
-		}
-
-		// Center both vertically and horizontally
-		return previewPaneStyle.
-			Width(p.width).
-			Align(lipgloss.Center).
-			Render(strings.Join(lines, ""))
+		return renderSurfaceFallback(previewPaneStyle, p.width, p.height, p.previewState.text)
 	}
 
 	// If in copy mode, use the viewport to display scrollable content
@@ -191,8 +157,7 @@ func (p *PreviewPane) String() string {
 	}
 
 	content := strings.Join(lines, "\n")
-	rendered := previewPaneStyle.Width(p.width).Render(content)
-	return rendered
+	return renderSurfaceContent(previewPaneStyle, p.width, p.height, content)
 }
 
 // ScrollUp scrolls up in the viewport
@@ -209,9 +174,7 @@ func (p *PreviewPane) ScrollUp(instance *session.Instance) error {
 		}
 
 		// Set content in the viewport
-		footer := lipgloss.NewStyle().
-			Foreground(lipgloss.AdaptiveColor{Light: "#808080", Dark: "#808080"}).
-			Render("ESC to exit scroll mode")
+		footer := terminalFooterStyle.Render("ESC to exit scroll mode")
 
 		contentWithFooter := lipgloss.JoinVertical(lipgloss.Left, content, footer)
 		p.viewport.SetContent(contentWithFooter)
@@ -242,9 +205,7 @@ func (p *PreviewPane) ScrollDown(instance *session.Instance) error {
 		}
 
 		// Set content in the viewport
-		footer := lipgloss.NewStyle().
-			Foreground(lipgloss.AdaptiveColor{Light: "#808080", Dark: "#808080"}).
-			Render("ESC to exit scroll mode")
+		footer := terminalFooterStyle.Render("ESC to exit scroll mode")
 
 		contentWithFooter := lipgloss.JoinVertical(lipgloss.Left, content, footer)
 		p.viewport.SetContent(contentWithFooter)

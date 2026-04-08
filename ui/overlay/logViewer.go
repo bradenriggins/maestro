@@ -28,8 +28,14 @@ func NewLogViewerOverlay() *LogViewerOverlay {
 
 // SetSize updates the overlay dimensions based on the terminal size.
 func (l *LogViewerOverlay) SetSize(w, h int) {
-	l.width = int(float32(w) * 0.8)
-	l.height = int(float32(h) * 0.7)
+	l.SetViewport(w, h)
+}
+
+// SetViewport sizes the log viewer overlay directly from viewport dimensions.
+func (l *LogViewerOverlay) SetViewport(viewW, viewH int) {
+	box := ComputeModalBox(viewW, viewH, 120, 60)
+	l.width = box.OuterWidth
+	l.height = box.OuterHeight
 }
 
 // Toggle flips the visibility of the overlay.

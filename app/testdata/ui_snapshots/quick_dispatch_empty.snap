@@ -1,0 +1,40 @@
+ Workflows             │╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────╮    
+                       ││                                                                                                              │    
+   Sessions -          ││  Dispatch Workflow                                                                                           │    
+ inspect...            ││                                                                                                              │    
+ › Dispatch - send     ││  Route work onto an available worker without leaving the workflow shell.                                     │    
+ wo...                 ││                                                                                                              │    
+   Review - triage     ││  Worker                                                                                                      │    
+ co...                 ││  No workers available                                                                                        │    
+   History - browse    ││                                                                                                              │    
+ p...                  ││  Task                                                                                                        │    
+   System - usage,     ││  Describe the work to route...█                                                                              │    
+ lo...                 ││                                                                                                              │    
+                       ││  [Enter] dispatch  [Esc] sessions  [←/→] worker                                                              │    
+                       ││                                                                                                              │    
+                       ││  No workers are available yet. Start a worker or try again later.                                            │    
+                       ││                                                                                                              │    
+                       │╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────╯    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+n new  N prompt  / dispatch  ? system  q quit                                                                                               
+                                                                                                                                    [?] help
+                                                                                                                                            

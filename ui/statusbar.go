@@ -9,6 +9,7 @@ import (
 	"maestro/pkg/orchestration"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 )
 
 // TaskCounts holds a snapshot of task status counts used by the status bar.
@@ -105,6 +106,33 @@ func CollectStatusBarCounts() (TaskCounts, error) {
 	return counts, nil
 }
 
+// Summary returns a compact, single-line summary suitable for the shell action bar.
+func (s *StatusBar) Summary() string {
+	total := s.cachedCounts.Total
+	if total == 0 {
+		return ""
+	}
+
+	var segments []string
+	segments = append(segments, fmt.Sprintf("%d/%d tasks", s.cachedCounts.Completed, total))
+	if s.cachedCounts.InProgress > 0 {
+		segments = append(segments, fmt.Sprintf("%d active", s.cachedCounts.InProgress))
+	}
+	if s.cachedCounts.Pending > 0 {
+		segments = append(segments, fmt.Sprintf("%d pending", s.cachedCounts.Pending))
+	}
+	if s.cachedCounts.Blocked > 0 {
+		segments = append(segments, fmt.Sprintf("%d blocked", s.cachedCounts.Blocked))
+	}
+	if s.cachedCounts.Failed > 0 {
+		segments = append(segments, fmt.Sprintf("%d failed", s.cachedCounts.Failed))
+	}
+	if s.cachedCounts.Stalled > 0 {
+		segments = append(segments, fmt.Sprintf("%d stalled", s.cachedCounts.Stalled))
+	}
+	return strings.Join(segments, " • ")
+}
+
 // Render returns the rendered status bar string. It is intentionally
 // side-effect free and only reads from the cache last set by SetCounts.
 func (s *StatusBar) Render() string {
@@ -114,6 +142,19 @@ func (s *StatusBar) Render() string {
 	failed := s.cachedCounts.Failed
 
 	helpHint := lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("[?] help")
+	if s.width > 0 && lipgloss.Width(helpHint) > s.width {
+		hint := "[?] help"
+		if s.width <= 3 {
+			hint = runewidth.Truncate(hint, s.width, "")
+		} else {
+			hint = runewidth.Truncate(hint, s.width-3, "...")
+		}
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render(hint)
+	}
+	availableWidth := s.width - lipgloss.Width(helpHint)
+	if availableWidth < 0 {
+		availableWidth = 0
+	}
 
 	if total == 0 {
 		// No tasks — still show the help hint right-aligned.
@@ -158,9 +199,39 @@ func (s *StatusBar) Render() string {
 
 	// Place the help hint at the right edge of the bar.
 	statusRendered := dimStyle.Render(status)
+	if lipgloss.Width(statusRendered) > availableWidth {
+		plainStatus := fmt.Sprintf("[%s] %d/%d tasks", bar, completed, total)
+		if inProgress > 0 {
+			plainStatus += fmt.Sprintf("  %d active", inProgress)
+		}
+		if s.cachedCounts.Pending > 0 {
+			plainStatus += fmt.Sprintf("  %d pending", s.cachedCounts.Pending)
+		}
+		if s.cachedCounts.Blocked > 0 {
+			plainStatus += fmt.Sprintf("  %d blocked", s.cachedCounts.Blocked)
+		}
+		if failed > 0 {
+			plainStatus += fmt.Sprintf("  %d failed", failed)
+		}
+		if s.cachedCounts.Stalled > 0 {
+			plainStatus += fmt.Sprintf("  %d stalled", s.cachedCounts.Stalled)
+		}
+		if availableWidth > 0 {
+			if runewidth.StringWidth(plainStatus) > availableWidth {
+				if availableWidth <= 3 {
+					plainStatus = runewidth.Truncate(plainStatus, availableWidth, "")
+				} else {
+					plainStatus = runewidth.Truncate(plainStatus, availableWidth-3, "...")
+				}
+			}
+		} else {
+			plainStatus = ""
+		}
+		statusRendered = dimStyle.Render(plainStatus)
+	}
 	gap := s.width - lipgloss.Width(statusRendered) - lipgloss.Width(helpHint)
-	if gap < 2 {
-		gap = 2
+	if gap < 0 {
+		gap = 0
 	}
 	return statusRendered + strings.Repeat(" ", gap) + helpHint
 }

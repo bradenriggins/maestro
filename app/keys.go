@@ -22,8 +22,9 @@ import (
 )
 
 func (m *home) handleMenuHighlighting(msg tea.KeyMsg) (cmd tea.Cmd, returnEarly bool) {
-	// Handle menu highlighting when you press a button. We intercept it here and immediately return to
-	// update the ui while re-sending the keypress. Then, on the next call to this, we actually handle the keypress.
+	// Handle footer action highlighting when you press a button. We intercept it here
+	// and immediately return to update the UI while re-sending the keypress. Then, on
+	// the next call to this, we actually handle the keypress.
 	if m.keySent {
 		m.keySent = false
 		return nil, false
@@ -33,10 +34,23 @@ func (m *home) handleMenuHighlighting(msg tea.KeyMsg) (cmd tea.Cmd, returnEarly 
 		m.state == stateReview {
 		return nil, false
 	}
+	if m.state == stateDefault && m.currentWorkflow() != workflowSessions {
+		return nil, false
+	}
 	// If it's in the global keymap, we should try to highlight it.
 	name, ok := keys.GlobalKeyNamesByString[msg.String()]
 	if !ok {
 		return nil, false
+	}
+	if name == keys.KeyQuickDispatch || name == keys.KeyHistory {
+		return nil, false
+	}
+	if name == keys.KeyResume && m.conductorConfig != nil {
+		selected := m.list.GetSelectedInstance()
+		if selected != nil && !selected.Paused() && selected.Account != "" &&
+			selected.Role == string(accounts.RoleWorker) {
+			return nil, false
+		}
 	}
 
 	if m.list.GetSelectedInstance() != nil && m.list.GetSelectedInstance().Paused() && name == keys.KeyEnter {
@@ -47,7 +61,7 @@ func (m *home) handleMenuHighlighting(msg tea.KeyMsg) (cmd tea.Cmd, returnEarly 
 	}
 
 	// Promote Enter to the "submit name" action while the new-instance overlay
-	// is active so the menu highlights the correct action.
+	// is active so the footer highlights the correct action.
 	if name == keys.KeyEnter && m.state == stateNew {
 		name = keys.KeySubmitName
 	}
@@ -369,7 +383,6 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 				if selected != nil {
 					workers := []string{selected.Title}
 					m.quickDispatchOverlay = overlay.NewQuickDispatchOverlay(workers)
-					m.quickDispatchOverlay.SetWidth(m.windowWidth)
 					// Populate worker model info from the orchestration registry.
 					models := make(map[string]string)
 					if reg, regErr := orchestration.LoadRegistry(); regErr == nil {
@@ -380,6 +393,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 						}
 					}
 					m.quickDispatchOverlay.SetWorkerModels(models)
+					m.sizeOverlays()
 					m.state = stateQuickDispatch
 					return m, nil
 				}
@@ -416,6 +430,17 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			m.state = stateDefault
 		}
 		return m, nil
+	}
+
+	if m.state == stateDefault {
+		switch m.currentWorkflow() {
+		case workflowDispatch:
+			return m.handleDispatchWorkflowKey(msg)
+		case workflowReview:
+			return m.handleReviewWorkflowKey(msg)
+		case workflowHistory:
+			return m.handleHistoryWorkflowKey(msg)
+		}
 	}
 
 	// Exit scrolling mode when ESC is pressed and preview pane is in scrolling mode
@@ -664,9 +689,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 
 		// If running a worker in multi-account mode, open the review overlay.
 		if m.conductorConfig != nil && selected.Account != "" && selected.Role == string(accounts.RoleWorker) {
-			m.reviewOverlay = overlay.NewReviewOverlay(selected.Title, selected.Branch, "main")
-			m.reviewOverlay.SetSize(m.windowWidth, 0)
-			m.state = stateReview
+			m.showReviewWorkflow(selected.Title, selected.Branch, "main")
 			return m, nil
 		}
 
@@ -685,32 +708,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		if m.conductorConfig == nil {
 			return m, nil
 		}
-		// Get worker names from the current instance list
-		var workers []string
-		var busyCount int
-		for _, inst := range m.list.GetInstances() {
-			if inst.Role == string(accounts.RoleWorker) {
-				if inst.Status != session.Paused {
-					workers = append(workers, inst.Title)
-				} else {
-					busyCount++
-				}
-			}
-		}
-		m.quickDispatchOverlay = overlay.NewQuickDispatchOverlay(workers)
-		m.quickDispatchOverlay.SetBusyCount(busyCount)
-		m.quickDispatchOverlay.SetWidth(m.windowWidth)
-		// Populate worker model info from the orchestration registry.
-		models := make(map[string]string)
-		if reg, regErr := orchestration.LoadRegistry(); regErr == nil {
-			for name, entry := range reg.Instances {
-				if entry.Model != "" {
-					models[name] = entry.Model
-				}
-			}
-		}
-		m.quickDispatchOverlay.SetWorkerModels(models)
-		m.state = stateQuickDispatch
+		m.showDispatchWorkflow("")
 		return m, nil
 	case keys.KeyLogViewer:
 		if m.logViewerOverlay.IsVisible() {
@@ -736,15 +734,8 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		}
 		return m, m.instanceChanged()
 	case keys.KeyHistory:
-		// Show tasks overlay (reuse orchestration overlay for now)
 		if m.conductorConfig != nil {
-			if m.orchestrationOverlay.IsVisible() {
-				m.orchestrationOverlay.Close()
-				m.state = stateDefault
-			} else {
-				m.orchestrationOverlay.Toggle()
-				m.state = stateOrchestration
-			}
+			return m, m.showHistoryWorkflow()
 		}
 		return m, nil
 	case keys.KeyEnter:

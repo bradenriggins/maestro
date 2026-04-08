@@ -1,0 +1,40 @@
+ Workflows             │╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────╮    
+                       ││                                                                                                              │    
+   Sessions -          ││  Dispatch Workflow                                                                                           │    
+ inspect...            ││                                                                                                              │    
+ › Dispatch - send     ││  Route work onto an available worker without leaving the workflow shell.                                     │    
+ wo...                 ││                                                                                                              │    
+   Review - triage     ││  Worker                                                                                                      │    
+ co...                 ││  [worker-1]                                                                                                  │    
+   History - browse    ││                                                                                                              │    
+ p...                  ││  Task                                                                                                        │    
+   System - usage,     ││  run audit█                                                                                                  │    
+ lo...                 ││                                                                                                              │    
+                       ││  [Enter] dispatch  [Esc] sessions  [←/→] worker                                                              │    
+                       ││                                                                                                              │    
+                       │╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────╯    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+                       │                                                                                                                    
+n new  N prompt  / dispatch  ? system  q quit                                                                                               
+                                                                                                                                    [?] help
+                                                                                                                                            

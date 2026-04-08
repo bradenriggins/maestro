@@ -96,20 +96,27 @@ func newTextarea(initialValue string) textarea.Model {
 }
 
 func (t *TextInputOverlay) SetSize(width, height int) {
-	t.textarea.SetHeight(height)
-	t.width = width
-	t.height = height
+	t.SetViewport(width, height)
+}
+
+// SetViewport sizes the prompt overlay directly from the viewport dimensions.
+func (t *TextInputOverlay) SetViewport(viewW, viewH int) {
+	box := ComputeModalBox(viewW, viewH, 80, 24)
+
+	t.width = box.OuterWidth
+	t.height = box.OuterHeight
+
 	// Set textarea width here (not in Render) to avoid state mutation during View.
-	innerWidth := width - 6 // accounting for padding and borders
-	if innerWidth < 1 {
-		innerWidth = 1
-	}
-	t.textarea.SetWidth(innerWidth)
+	t.textarea.SetWidth(box.InnerWidth)
+
+	bodyHeight := overlayMax(box.InnerHeight-t.chromeRows(), 3)
+	t.textarea.SetHeight(bodyHeight)
+
 	if t.branchPicker != nil {
-		t.branchPicker.SetWidth(innerWidth)
+		t.branchPicker.SetWidth(box.InnerWidth)
 	}
 	if t.profilePicker != nil {
-		t.profilePicker.SetWidth(innerWidth)
+		t.profilePicker.SetWidth(box.InnerWidth)
 	}
 }
 
@@ -302,7 +309,6 @@ func (t *TextInputOverlay) SetOnSubmit(onSubmit func()) {
 
 // Render renders the text input overlay.
 func (t *TextInputOverlay) Render() string {
-	// Inner content width (accounting for padding and borders)
 	innerWidth := t.width - 6
 	if innerWidth < 1 {
 		innerWidth = 1
@@ -338,7 +344,6 @@ func (t *TextInputOverlay) Render() string {
 	b.WriteString(divider)
 	b.WriteString("\n\n")
 
-	// Render enter button with appropriate style
 	enterButton := " Enter "
 	if t.isEnterButton() {
 		b.WriteString(tiFocusedButtonStyle.Render(enterButton))
@@ -346,5 +351,39 @@ func (t *TextInputOverlay) Render() string {
 		b.WriteString(tiButtonStyle.Render(enterButton))
 	}
 
-	return tiStyle.Render(b.String())
+	b.WriteString("\n\n")
+	b.WriteString(tiDividerStyle.Render(strings.Repeat("─", innerWidth)))
+	b.WriteString("\n\n")
+	b.WriteString(tiDividerStyle.Render(truncateToWidth(t.footerHint(), innerWidth)))
+
+	style := tiStyle.Width(t.width)
+	if t.height > 0 {
+		style = style.Height(t.height)
+	}
+	return style.Render(b.String())
+}
+
+func (t *TextInputOverlay) footerHint() string {
+	base := "[Tab] next  [Shift+Tab] previous  [Esc] cancel"
+	switch {
+	case t.isEnterButton():
+		return base + "  [Enter] submit"
+	case t.isBranchPicker():
+		return base + "  [↑/↓] choose branch  [Enter] continue"
+	case t.isProfilePicker():
+		return base + "  [←/→] choose profile  [Enter] continue"
+	default:
+		return base + "  [Enter] newline"
+	}
+}
+
+func (t *TextInputOverlay) chromeRows() int {
+	rows := 10
+	if t.profilePicker != nil {
+		rows += 4
+	}
+	if t.branchPicker != nil {
+		rows += 4
+	}
+	return rows
 }

@@ -31,6 +31,7 @@ type QuickDispatchOverlay struct {
 	submitted    bool
 	canceled     bool
 	width        int
+	height       int
 	errorMsg     string // set when Enter is pressed with no workers available
 	busyCount    int    // number of workers that exist but were excluded (e.g. paused)
 }
@@ -63,6 +64,13 @@ func (q *QuickDispatchOverlay) SetWidth(w int) {
 	if q.width < 40 {
 		q.width = 40
 	}
+}
+
+// SetViewport sizes the quick dispatch overlay directly from the viewport dimensions.
+func (q *QuickDispatchOverlay) SetViewport(viewW, viewH int) {
+	box := ComputeModalBox(viewW, viewH, 80, 18)
+	q.width = box.OuterWidth
+	q.height = box.OuterHeight
 }
 
 // HandleKeyPress processes a key event and updates overlay state.
@@ -183,7 +191,11 @@ func (q *QuickDispatchOverlay) Render() string {
 		b.WriteString(qdErrorStyle.Render("  " + q.errorMsg))
 	}
 
-	return qdBoxStyle.Width(q.width).Render(b.String())
+	style := qdBoxStyle.Width(q.width)
+	if q.height > 0 {
+		style = style.Height(q.height)
+	}
+	return style.Render(b.String())
 }
 
 // Visible reports whether the overlay is currently active.

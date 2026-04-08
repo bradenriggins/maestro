@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/stretchr/testify/require"
 )
 
@@ -283,6 +284,17 @@ func TestPreviewScrolling(t *testing.T) {
 
 	// Verify we exited scrolling mode
 	require.False(t, previewPane.isScrolling, "Should not be in scrolling mode after reset")
+}
+
+func TestPreviewFallbackFitsViewport(t *testing.T) {
+	previewPane := NewPreviewPane()
+	previewPane.SetSize(40, 4)
+	previewPane.setFallbackState("Waiting for preview...")
+
+	rendered := previewPane.String()
+
+	require.Equal(t, 40, lipgloss.Width(rendered))
+	require.Equal(t, 4, lipgloss.Height(rendered))
 }
 
 // MockPtyFactory for testing tmux sessions

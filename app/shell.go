@@ -1,0 +1,201 @@
+package app
+
+import (
+	"maestro/log"
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/ansi"
+	"github.com/muesli/reflow/truncate"
+)
+
+func (m *home) shellBannerHeight() int {
+	height := 0
+	if m.setupNeeded {
+		height++
+	}
+	if m.conflictBanner != "" {
+		height++
+	}
+	if m.wakeBanner != "" {
+		height++
+	}
+	return height
+}
+
+func (m *home) shellFooterHeight() int {
+	height := 1
+	if m.conductorConfig != nil && m.statusBar != nil {
+		height++
+	}
+	return height
+}
+
+func (m *home) syncShellLayout() {
+	layout := newLayoutSpec(m.windowWidth, m.windowHeight, m.shellBannerHeight(), m.shellFooterHeight())
+
+	if m.errBox != nil {
+		m.errBox.SetSize(layout.error.Width, layout.error.Height)
+	}
+
+	if m.tabbedWindow != nil || m.list != nil {
+		listWidth, tabsWidth := splitMainPaneWidth(layout.main.Width)
+		if m.tabbedWindow != nil {
+			m.tabbedWindow.SetSize(tabsWidth, layout.main.Height)
+		}
+		if m.list != nil {
+			m.list.SetSize(listWidth, layout.main.Height)
+			if m.tabbedWindow != nil {
+				previewWidth, previewHeight := m.tabbedWindow.GetPreviewSize()
+				if err := m.list.SetSessionPreviewSize(previewWidth, previewHeight); err != nil {
+					log.ErrorLog.Print(err)
+				}
+			}
+		}
+	}
+
+	if m.workflowNav != nil {
+		m.workflowNav.SetItems(m.workflowNavItems())
+		m.workflowNav.SetSize(layout.nav.Width, layout.nav.Height)
+	}
+	if m.menu != nil {
+		menuHeight := 0
+		if layout.footer.Height > 0 {
+			menuHeight = 1
+		}
+		m.menu.SetSize(layout.footer.Width, menuHeight)
+	}
+	if m.statusBar != nil {
+		m.statusBar.SetWidth(layout.footer.Width)
+	}
+}
+
+func (m *home) renderShellBanners(width int) []string {
+	var banners []string
+
+	if m.setupNeeded {
+		banners = append(banners, lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214")).
+			Bold(true).
+			Padding(0, 1).
+			Render("Multi-account orchestration is not configured. Run `maestro setup` to enable it."))
+	}
+	if m.conflictBanner != "" {
+		banners = append(banners, lipgloss.NewStyle().
+			Foreground(lipgloss.Color("226")).
+			Bold(true).
+			Padding(0, 1).
+			Render(m.conflictBanner))
+	}
+	if m.wakeBanner != "" {
+		banners = append(banners, lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214")).
+			Bold(true).
+			Padding(0, 1).
+			Render(m.wakeBanner))
+	}
+
+	for i, banner := range banners {
+		banners[i] = fitBox(width, 1, banner)
+	}
+
+	return banners
+}
+
+func (m *home) renderMainPane(width, height int) string {
+	if width <= 0 || height <= 0 {
+		return ""
+	}
+
+	switch m.currentWorkflow() {
+	case workflowDispatch:
+		if m.dispatchPanel != nil {
+			m.dispatchPanel.SetSize(width, height)
+			return fitBox(width, height, m.dispatchPanel.Render())
+		}
+	case workflowReview:
+		if m.reviewPanel != nil {
+			m.reviewPanel.SetSize(width, height)
+			return fitBox(width, height, m.reviewPanel.Render())
+		}
+	case workflowHistory:
+		if m.historyPanel != nil {
+			m.historyPanel.SetSize(width, height)
+			return fitBox(width, height, m.historyPanel.Render())
+		}
+	}
+
+	if m.list == nil || m.tabbedWindow == nil {
+		return lipgloss.Place(width, height, lipgloss.Left, lipgloss.Top, "")
+	}
+
+	if m.list.NumInstances() == 0 && m.state == stateDefault {
+		emptyMsg := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("245")).
+			Width(width).
+			Align(lipgloss.Center).
+			Render("No instances yet\n\nPress 'n' to create your first instance\nPress '?' for help\nPress 'q' to quit")
+		return fitBox(width, height, lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, emptyMsg))
+	}
+
+	content := lipgloss.JoinHorizontal(lipgloss.Top, m.list.String(), m.tabbedWindow.String())
+	return fitBox(width, height, lipgloss.Place(width, height, lipgloss.Left, lipgloss.Top, content))
+}
+
+func (m *home) renderFooter(layout layoutSpec) string {
+	if layout.footer.Width <= 0 || layout.footer.Height <= 0 {
+		return ""
+	}
+
+	var parts []string
+	if m.menu != nil {
+		parts = append(parts, m.menu.String())
+	}
+	if m.conductorConfig != nil && m.statusBar != nil {
+		parts = append(parts, m.statusBar.Render())
+	}
+
+	return lipgloss.Place(
+		layout.footer.Width,
+		layout.footer.Height,
+		lipgloss.Left,
+		lipgloss.Top,
+		strings.Join(parts, "\n"),
+	)
+}
+
+func (m *home) renderShell(layout layoutSpec, mainContent string) string {
+	navView := fitBox(layout.nav.Width, layout.nav.Height, "")
+	if m.workflowNav != nil {
+		navView = fitBox(layout.nav.Width, layout.nav.Height, m.workflowNav.Render())
+	}
+
+	mainView := fitBox(layout.main.Width, layout.main.Height, mainContent)
+	body := fitBox(layout.content.Width, layout.content.Height, lipgloss.JoinHorizontal(lipgloss.Top, navView, mainView))
+
+	footer := fitBox(layout.footer.Width, layout.footer.Height, m.renderFooter(layout))
+	errorView := ""
+	if m.errBox != nil {
+		errorView = fitBox(layout.error.Width, layout.error.Height, m.errBox.String())
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, body, footer, errorView)
+}
+
+func fitBox(width, height int, content string) string {
+	if width <= 0 || height <= 0 {
+		return ""
+	}
+
+	lines := strings.Split(content, "\n")
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	for i, line := range lines {
+		if ansi.PrintableRuneWidth(line) > width {
+			lines[i] = truncate.String(line, uint(width))
+		}
+	}
+
+	return lipgloss.Place(width, height, lipgloss.Left, lipgloss.Top, strings.Join(lines, "\n"))
+}

@@ -166,18 +166,18 @@ var (
 // Render renders the branch picker.
 func (bp *BranchPicker) Render() string {
 	var s strings.Builder
-	s.WriteString(bpLabelStyle.Render("Branch"))
+	header := "Branch"
 	if bp.focused {
-		cursor := bp.filter + "█"
-		s.WriteString(bpFilterStyle.Render(" (filter: " + cursor + ")"))
+		header += " (filter: " + bp.filter + "█)"
 	} else if bp.filter != "" {
-		s.WriteString(bpDimStyle.Render(" (filter: " + bp.filter + ")"))
+		header += " (filter: " + bp.filter + ")"
 	}
+	s.WriteString(bpLabelStyle.Render(truncateToWidth(header, bp.width)))
 	s.WriteString("\n\n")
 
 	items := bp.visibleItems()
 	if len(items) == 0 {
-		s.WriteString(bpDimStyle.Render("  No matching branches"))
+		s.WriteString(bpDimStyle.Render(truncateToWidth("  No matching branches", bp.width)))
 		return s.String()
 	}
 
@@ -195,13 +195,15 @@ func (bp *BranchPicker) Render() string {
 	for i := start; i < end; i++ {
 		prefix := "  "
 		label := items[i]
+		line := prefix + truncateToWidth(label, bp.width-len(prefix))
 		if i == bp.cursor && bp.focused {
 			prefix = "> "
-			s.WriteString(bpSelectedStyle.Render(prefix + label))
+			line = prefix + truncateToWidth(label, bp.width-len(prefix))
+			s.WriteString(bpSelectedStyle.Render(truncateToWidth(line, bp.width)))
 		} else if i == bp.cursor {
-			s.WriteString(prefix + label)
+			s.WriteString(truncateToWidth(line, bp.width))
 		} else {
-			s.WriteString(bpDimStyle.Render(prefix + label))
+			s.WriteString(bpDimStyle.Render(truncateToWidth(line, bp.width)))
 		}
 		if i < end-1 {
 			s.WriteString("\n")

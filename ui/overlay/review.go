@@ -35,8 +35,13 @@ func NewReviewOverlay(instanceTitle, branch, baseBranch string) *ReviewOverlay {
 }
 
 func (r *ReviewOverlay) SetSize(w, h int) {
-	r.width = int(float32(w) * 0.7)
-	r.height = int(float32(h) * 0.3)
+	r.SetViewport(w, h)
+}
+
+func (r *ReviewOverlay) SetViewport(viewW, viewH int) {
+	box := ComputeModalBox(viewW, viewH, 80, 24)
+	r.width = box.OuterWidth
+	r.height = box.OuterHeight
 }
 
 func (r *ReviewOverlay) HandleKeyPress(msg tea.KeyMsg) (shouldClose bool) {
@@ -88,6 +93,9 @@ func (r *ReviewOverlay) Render() string {
 		BorderForeground(lipgloss.Color("62")).
 		Padding(1, 2).
 		Width(r.width)
+	if r.height > 0 {
+		boxStyle = boxStyle.Height(r.height)
+	}
 
 	return boxStyle.Render(b.String())
 }

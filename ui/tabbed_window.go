@@ -14,22 +14,6 @@ func tabBorderWithBottom(left, middle, right string) lipgloss.Border {
 	return border
 }
 
-var (
-	inactiveTabBorder = tabBorderWithBottom("┴", "─", "┴")
-	activeTabBorder   = tabBorderWithBottom("┘", " ", "└")
-	highlightColor    = lipgloss.AdaptiveColor{Light: "#874BFD", Dark: "#7D56F4"}
-	inactiveTabStyle  = lipgloss.NewStyle().
-				Border(inactiveTabBorder, true).
-				BorderForeground(highlightColor).
-				AlignHorizontal(lipgloss.Center)
-	activeTabStyle = inactiveTabStyle.
-			Border(activeTabBorder, true).
-			AlignHorizontal(lipgloss.Center)
-	windowStyle = lipgloss.NewStyle().
-			BorderForeground(highlightColor).
-			Border(lipgloss.NormalBorder(), false, true, true, true)
-)
-
 const (
 	PreviewTab int = iota
 	DiffTab
@@ -73,22 +57,26 @@ func (w *TabbedWindow) SetInstance(instance *session.Instance) {
 	w.instance = instance
 }
 
-// AdjustPreviewWidth adjusts the width of the preview pane to be 90% of the provided width.
+// AdjustPreviewWidth keeps pane width aligned with the assigned layout width.
 func AdjustPreviewWidth(width int) int {
-	return int(float64(width) * 0.9)
+	return clampDimension(width)
+}
+
+func tabHeaderHeight() int {
+	return activeTabStyle.GetVerticalFrameSize() + 1
+}
+
+func tabbedWindowContentSize(width, height int) (int, int) {
+	return clampDimension(width - windowStyle.GetHorizontalFrameSize()),
+		clampDimension(height - tabHeaderHeight() - windowStyle.GetVerticalFrameSize())
 }
 
 func (w *TabbedWindow) SetSize(width, height int) {
 	w.width = AdjustPreviewWidth(width)
-	w.height = height
+	w.height = clampDimension(height)
 
-	// Calculate the content height by subtracting:
-	// 1. Tab height (including border and padding)
-	// 2. Window style vertical frame size
-	// 3. Additional padding/spacing (2 for the newline and spacing)
-	tabHeight := activeTabStyle.GetVerticalFrameSize() + 1
-	contentHeight := height - tabHeight - windowStyle.GetVerticalFrameSize() - 2
-	contentWidth := w.width - windowStyle.GetHorizontalFrameSize()
+	contentWidth := TabbedWindowContentWidth(w.width)
+	contentHeight := TabbedWindowContentHeight(w.height)
 
 	w.preview.SetSize(contentWidth, contentHeight)
 	w.diff.SetSize(contentWidth, contentHeight)
@@ -237,10 +225,9 @@ func (w *TabbedWindow) String() string {
 
 	var renderedTabs []string
 
-	totalTabWidth := w.width + windowStyle.GetHorizontalFrameSize()
+	totalTabWidth := w.width
 	tabWidth := totalTabWidth / len(w.tabs)
 	lastTabWidth := totalTabWidth - tabWidth*(len(w.tabs)-1)
-	tabHeight := activeTabStyle.GetVerticalFrameSize() + 1 // get padding border margin size + 1 for character height
 
 	for i, t := range w.tabs {
 		width := tabWidth
@@ -280,10 +267,11 @@ func (w *TabbedWindow) String() string {
 	case TerminalTab:
 		content = w.terminal.String()
 	}
+	contentWidth, contentHeight := tabbedWindowContentSize(w.width, w.height)
 	window := windowStyle.Render(
 		lipgloss.Place(
-			w.width, w.height-2-windowStyle.GetVerticalFrameSize()-tabHeight,
+			contentWidth, contentHeight,
 			lipgloss.Left, lipgloss.Top, content))
 
-	return lipgloss.JoinVertical(lipgloss.Left, "\n", row, window)
+	return lipgloss.JoinVertical(lipgloss.Left, row, window)
 }

@@ -1,0 +1,40 @@
+ Workflows             │                                      ╭────────────────────────╮╭────────────────────────╮╭────────────────────────╮
+                       │                                      │        Preview         ││          Diff          ││        Terminal        │
+   Sessions -          │ Instances                            │                        └┴────────────────────────┴┴────────────────────────┤
+ inspect...            │                                      │                                                                            │
+   Dispatch - send     │                                      │                                                                            │
+ wo...                 │                                      │                                                                            │
+   Review - triage     │                                      │                                                                            │
+ co...                 │   ╭────────────────────────────────────────────────────────────────────────────────────╮                          │
+   History - browse    │   │                                                                                    │░                         │
+ p...                  │   │  Orchestration Panel                                                               │░                         │
+ › System - usage,     │   │                                                                                    │░                         │
+ lo...                 │   │  Workers:                                                                          │░                         │
+                       │   │    (registry unavailable)                                                          │░                         │
+                       │   │                                                                                    │░                         │
+                       │   │    (no tasks)                                                                      │░                         │
+                       │   │                                                                                    │░                         │
+                       │   │  Plan:                                                                             │░                         │
+                       │   │    (no plan.md found)                                                              │░                         │
+                       │   │                                                                                    │░                         │
+                       │   │  Usage:                                                                            │░                         │
+                       │   │    (run `maestro usage` to collect data)                                           │░                         │
+                       │   │                                                                                    │░                         │
+                       │   │  Waiting for first refresh                                                         │░                         │
+                       │   │  [o/Esc] close  [Tab] filter  [/] search  [j/k] navigate  [Enter] preview  [R]     │░                         │
+                       │   │  retry failed                                                                      │░                         │
+                       │   │                                                                                    │░                         │
+                       │   │                                                                                    │░                         │
+                       │   │                                                                                    │░                         │
+                       │   │                                                                                    │░                         │
+                       │   │                                                                                    │░                         │
+                       │   │                                                                                    │░                         │
+                       │   │                                                                                    │░                         │
+                       │   ╰────────────────────────────────────────────────────────────────────────────────────╯░                         │
+                       │    ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░                         │
+                       │                                      │                                                                            │
+                       │                                      │                                                                            │
+                       │                                      │                                                                            │
+                       │                                      └────────────────────────────────────────────────────────────────────────────┘
+n new  N prompt  / dispatch  ? system  q quit                                                                                               
+                                                                                                                                            
