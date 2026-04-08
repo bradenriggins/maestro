@@ -107,6 +107,24 @@ func (m *home) renderMainPane(width, height int) string {
 		return ""
 	}
 
+	switch m.currentWorkflow() {
+	case workflowDispatch:
+		if m.dispatchPanel != nil {
+			m.dispatchPanel.SetSize(width, height)
+			return fitBox(width, height, m.dispatchPanel.Render())
+		}
+	case workflowReview:
+		if m.reviewPanel != nil {
+			m.reviewPanel.SetSize(width, height)
+			return fitBox(width, height, m.reviewPanel.Render())
+		}
+	case workflowHistory:
+		if m.historyPanel != nil {
+			m.historyPanel.SetSize(width, height)
+			return fitBox(width, height, m.historyPanel.Render())
+		}
+	}
+
 	if m.list == nil || m.tabbedWindow == nil {
 		return lipgloss.Place(width, height, lipgloss.Left, lipgloss.Top, "")
 	}

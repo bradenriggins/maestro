@@ -124,6 +124,10 @@ type home struct {
 	reviewOverlay        *overlay.ReviewOverlay
 	workflowNav          *ui.WorkflowNav
 	statusBar            *ui.StatusBar
+	dispatchPanel        *ui.DispatchPanel
+	reviewPanel          *ui.ReviewPanel
+	historyPanel         *ui.HistoryPanel
+	activeWorkflow       workflowID
 
 	// windowWidth stores the last known terminal width for overlay sizing
 	windowWidth int
@@ -205,6 +209,7 @@ func newHome(ctx context.Context, program string, autoYes bool, fresh bool, noSa
 		logViewerOverlay:     logOverlay,
 		workflowNav:          ui.NewWorkflowNav(),
 		statusBar:            statusBar,
+		activeWorkflow:       workflowSessions,
 		lastReconcileTime:    time.Now(),
 		lastOutputChange:     make(map[string]time.Time),
 		stalledInstances:     make(map[string]time.Time),
@@ -265,6 +270,15 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 	}
 	if m.logViewerOverlay != nil {
 		m.logViewerOverlay.SetSize(msg.Width, msg.Height)
+	}
+	if m.dispatchPanel != nil {
+		m.dispatchPanel.SetSize(msg.Width, msg.Height)
+	}
+	if m.reviewPanel != nil {
+		m.reviewPanel.SetSize(msg.Width, msg.Height)
+	}
+	if m.historyPanel != nil {
+		m.historyPanel.SetSize(msg.Width, msg.Height)
 	}
 }
 
@@ -729,13 +743,33 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.orchestrationOverlay.SetPreviewContent(msg.taskID, msg.content)
 		}
 		return m, nil
+	case historyLoadedMsg:
+		if m.historyPanel == nil {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.historyPanel.SetError(msg.err)
+			return m, nil
+		}
+		m.historyPanel.SetTasks(msg.tasks)
+		return m, nil
 	case promptSentMsg:
 		// No-op: prompt was sent asynchronously; log for debugging.
 		log.InfoLog.Printf("prompt sent to instance %q", msg.name)
 		return m, nil
 	case quickDispatchResultMsg:
+		if m.dispatchPanel != nil {
+			m.dispatchPanel.SetSubmitting(false)
+		}
 		if msg.err != nil {
+			if m.dispatchPanel != nil {
+				m.dispatchPanel.SetErrorMessage("Dispatch failed: " + msg.err.Error())
+			}
 			return m, m.handleError(fmt.Errorf("quick dispatch failed: %w", msg.err))
+		}
+		if m.dispatchPanel != nil {
+			m.dispatchPanel.ClearTask()
+			m.dispatchPanel.SetStatusMessage(fmt.Sprintf("Dispatched task %s", msg.taskID))
 		}
 		log.InfoLog.Printf("quick dispatch succeeded: task %q", msg.taskID)
 		return m, nil
@@ -1178,6 +1212,11 @@ type promptSentMsg struct{ name string }
 type quickDispatchResultMsg struct {
 	taskID string
 	err    error
+}
+
+type historyLoadedMsg struct {
+	tasks []*orchestration.Task
+	err   error
 }
 
 // pauseCompleteMsg is sent when instance.Pause() finishes in a background goroutine.
