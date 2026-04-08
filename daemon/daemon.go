@@ -1,10 +1,10 @@
 package daemon
 
 import (
-	"claude-conductor/config"
-	"claude-conductor/log"
-	"claude-conductor/session"
 	"fmt"
+	"maestro/config"
+	"maestro/log"
+	"maestro/session"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -15,7 +15,7 @@ import (
 )
 
 // RunDaemon runs the daemon process which iterates over all sessions and runs AutoYes mode on them.
-// It's expected that the main process kills the daemon when the main process starts.
+// The main process is expected to stop the daemon on startup.
 func RunDaemon(cfg *config.Config) error {
 	log.InfoLog.Printf("starting daemon")
 	state := config.LoadState()
@@ -26,7 +26,7 @@ func RunDaemon(cfg *config.Config) error {
 
 	instances, err := storage.LoadInstances()
 	if err != nil {
-		return fmt.Errorf("failed to load instacnes: %w", err)
+		return fmt.Errorf("failed to load instances: %w", err)
 	}
 	for _, instance := range instances {
 		// Assume AutoYes is true if the daemon is running.
@@ -35,7 +35,7 @@ func RunDaemon(cfg *config.Config) error {
 
 	pollInterval := time.Duration(cfg.DaemonPollInterval) * time.Millisecond
 
-	// If we get an error for a session, it's likely that we'll keep getting the error. Log every 30 seconds.
+	// If we get an error for a session, it's likely that we'll keep getting the error. Log every 60 seconds.
 	everyN := log.NewEvery(60 * time.Second)
 
 	wg := &sync.WaitGroup{}
@@ -43,7 +43,8 @@ func RunDaemon(cfg *config.Config) error {
 	stopCh := make(chan struct{})
 	go func() {
 		defer wg.Done()
-		ticker := time.NewTimer(pollInterval)
+		ticker := time.NewTicker(pollInterval)
+		defer ticker.Stop()
 		for {
 			for _, instance := range instances {
 				// We only store started instances, but check anyway.
@@ -59,19 +60,16 @@ func RunDaemon(cfg *config.Config) error {
 				}
 			}
 
-			// Handle stop before ticker.
+			// Wait for the next poll interval or a stop signal.
 			select {
 			case <-stopCh:
 				return
-			default:
+			case <-ticker.C:
 			}
-
-			<-ticker.C
-			ticker.Reset(pollInterval)
 		}
 	}()
 
-	// Notify on SIGINT (Ctrl+C) and SIGTERM. Save instances before
+	// Notify on SIGINT (Ctrl+C) and SIGTERM, then save instances before exit.
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigChan
@@ -89,7 +87,7 @@ func RunDaemon(cfg *config.Config) error {
 
 // LaunchDaemon launches the daemon process.
 func LaunchDaemon() error {
-	// Find the claude squad binary.
+	// Find the maestro binary.
 	execPath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("failed to get executable path: %w", err)
@@ -111,6 +109,13 @@ func LaunchDaemon() error {
 
 	log.InfoLog.Printf("started daemon child process with PID: %d", cmd.Process.Pid)
 
+	// Release the process descriptor so we don't hold a zombie entry for the
+	// detached child.  We intentionally do not Wait() because we want the
+	// daemon to outlive the parent.
+	if err := cmd.Process.Release(); err != nil {
+		log.ErrorLog.Printf("failed to release daemon process handle: %v", err)
+	}
+
 	// Save PID to a file for later management
 	pidDir, err := config.GetConfigDir()
 	if err != nil {
@@ -118,7 +123,7 @@ func LaunchDaemon() error {
 	}
 
 	pidFile := filepath.Join(pidDir, "daemon.pid")
-	if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0644); err != nil {
+	if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0600); err != nil {
 		return fmt.Errorf("failed to write PID file: %w", err)
 	}
 
@@ -153,9 +158,20 @@ func StopDaemon() error {
 		return fmt.Errorf("failed to find daemon process: %w", err)
 	}
 
-	if err := proc.Kill(); err != nil {
+	// Send SIGTERM so the daemon's signal handler can save state gracefully.
+	// proc.Kill() sends SIGKILL which cannot be caught, bypassing the
+	// RunDaemon shutdown path that persists instances.
+	if err := proc.Signal(syscall.SIGTERM); err != nil {
+		// If the process is already dead (crashed, exited), clean up the stale
+		// PID file instead of returning an error that prevents cleanup.
+		_ = os.Remove(pidFile)
 		return fmt.Errorf("failed to stop daemon process: %w", err)
 	}
+
+	// Give the daemon a moment to finish its graceful shutdown (save state).
+	// If it doesn't exit in time we don't force-kill — the PID file cleanup
+	// below is the important part for the caller.
+	time.Sleep(500 * time.Millisecond)
 
 	// Clean up PID file
 	if err := os.Remove(pidFile); err != nil {

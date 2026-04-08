@@ -14,7 +14,7 @@ func DefaultConfig() *ConductorConfig {
 		ProtocolVersion:   "1",
 		Accounts:          nil,
 		DefaultProgram:    "claude",
-		BranchPrefix:      "conductor/",
+		BranchPrefix:      "maestro/",
 		AutoYes:           false,
 		PostWorktreeSetup: "",
 		Notifications: NotificationConfig{
@@ -39,9 +39,22 @@ func LoadConductorConfig() (*ConductorConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			// Check for legacy config at ~/.claude-conductor/
+			if legacyDir, legacyErr := legacyConductorDir(); legacyErr == nil {
+				legacyPath := filepath.Join(legacyDir, ConfigFileName)
+				if _, statErr := os.Stat(legacyPath); statErr == nil {
+					return nil, fmt.Errorf(
+						"no config found at %s, but legacy config exists at %s\n"+
+							"  Migrate by running: mv %s %s",
+						base, legacyDir, legacyDir, base)
+				}
+			}
 			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to read config: %w", err)
+	}
+	if len(data) == 0 {
+		return nil, nil
 	}
 	var cfg ConductorConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {

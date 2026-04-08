@@ -1,8 +1,8 @@
 package ui
 
 import (
-	"claude-conductor/session"
 	"fmt"
+	"maestro/session"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/viewport"

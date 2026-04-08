@@ -1,21 +1,21 @@
 package app
 
 import (
-	"claude-conductor/config"
-	"claude-conductor/keys"
-	"claude-conductor/log"
-	"claude-conductor/pkg/accounts"
-	"claude-conductor/pkg/notify"
-	"claude-conductor/pkg/orchestration"
-	"claude-conductor/session"
-	"claude-conductor/session/git"
-	"claude-conductor/session/tmux"
-	"claude-conductor/ui"
-	"claude-conductor/ui/overlay"
 	"context"
 	"fmt"
+	"maestro/config"
+	"maestro/keys"
+	"maestro/log"
+	"maestro/pkg/accounts"
+	"maestro/pkg/notify"
+	"maestro/pkg/orchestration"
+	"maestro/pkg/programs"
+	"maestro/session"
+	"maestro/session/git"
+	"maestro/session/tmux"
+	"maestro/ui"
+	"maestro/ui/overlay"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -24,7 +24,6 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/mattn/go-runewidth"
 )
 
 const GlobalInstanceLimit = 10
@@ -77,8 +76,8 @@ type home struct {
 	// appState stores persistent application state like seen help screens
 	appState config.AppState
 
-	// conductorConfig is the multi-account conductor configuration.
-	// Nil if no conductor config exists (falls back to single-account behavior).
+	// conductorConfig holds the multi-account configuration.
+	// Nil if no account config exists (falls back to single-account behavior).
 	conductorConfig *accounts.ConductorConfig
 
 	// -- State --
@@ -114,7 +113,7 @@ type home struct {
 	// confirmationOverlay displays confirmation modals
 	confirmationOverlay *overlay.ConfirmationOverlay
 
-	// Conductor overlays
+	// Maestro overlays
 	orchestrationOverlay *overlay.OrchestrationOverlay
 	quickDispatchOverlay *overlay.QuickDispatchOverlay
 	logViewerOverlay     *overlay.LogViewerOverlay
@@ -123,6 +122,8 @@ type home struct {
 
 	// windowWidth stores the last known terminal width for overlay sizing
 	windowWidth int
+	// windowHeight stores the last known terminal height for layout calculations
+	windowHeight int
 
 	// Session persistence and git safety net
 	sessionStartedAt string
@@ -136,6 +137,25 @@ type home struct {
 
 	// lastOutputChange tracks the last time each instance's tmux output changed (for stall detection)
 	lastOutputChange map[string]time.Time
+
+	// Wake-from-sleep banner
+	wakeBanner    string // non-empty = show banner
+	wakeBannerSeq int    // prevents stale dismiss messages
+
+	// Stall detection
+	stalledInstances  map[string]time.Time // key=instance name, value=when stall first detected
+	stallCheckCounter int                  // only check every 10th metadata tick (~5s)
+
+	// registryMutationSeq is incremented every time updateRegistry() writes registry.json.
+	// Used to detect stale reconcile snapshots.
+	registryMutationSeq int
+
+	// setupNeeded is true when no account config was found on startup.
+	setupNeeded bool
+
+	// pendingConfirmAction is the tea.Cmd to run when the user confirms a modal.
+	// Set by confirmAction and consumed by the stateConfirm handler.
+	pendingConfirmAction tea.Cmd
 }
 
 func newHome(ctx context.Context, program string, autoYes bool, fresh bool, noSafetyNet bool) *home {
@@ -145,11 +165,13 @@ func newHome(ctx context.Context, program string, autoYes bool, fresh bool, noSa
 	// Load application state
 	appState := config.LoadState()
 
-	// Load conductor config (optional — nil means single-account mode)
+	// Load account config (optional — nil means single-account mode)
 	conductorCfg, err := accounts.LoadConductorConfig()
 	if err != nil {
-		log.ErrorLog.Printf("failed to load conductor config: %v", err)
+		log.ErrorLog.Printf("failed to load account config: %v", err)
 	}
+	// setupNeeded is true on first run before 'maestro setup' has been run.
+	setupNeeded := conductorCfg == nil
 
 	// Initialize storage
 	storage, err := session.NewStorage(appState)
@@ -180,6 +202,8 @@ func newHome(ctx context.Context, program string, autoYes bool, fresh bool, noSa
 		statusBar:            statusBar,
 		lastReconcileTime:    time.Now(),
 		lastOutputChange:     make(map[string]time.Time),
+		stalledInstances:     make(map[string]time.Time),
+		setupNeeded:          setupNeeded,
 	}
 	h.list = ui.NewList(&h.spinner, autoYes)
 
@@ -192,11 +216,13 @@ func newHome(ctx context.Context, program string, autoYes bool, fresh bool, noSa
 
 	// Add loaded instances to the list
 	for _, instance := range instances {
-		// Call the finalizer immediately.
-		h.list.AddInstance(instance)()
+		// Set AutoYes before finalizing so the instance is fully configured
+		// before it is registered in the list.
 		if autoYes {
 			instance.AutoYes = true
 		}
+		// Call the finalizer immediately.
+		h.list.AddInstance(instance)()
 	}
 
 	// Git safety net
@@ -224,7 +250,10 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 
 	// Menu takes 10% of height, list and window take 90%
 	contentHeight := int(float32(msg.Height) * 0.9)
-	menuHeight := msg.Height - contentHeight - 1     // minus 1 for error box
+	menuHeight := msg.Height - contentHeight - 1 // minus 1 for error box
+	if menuHeight < 0 {
+		menuHeight = 0
+	}
 	m.errBox.SetSize(int(float32(msg.Width)*0.9), 1) // error box takes 1 row
 
 	m.tabbedWindow.SetSize(tabsWidth, contentHeight)
@@ -243,6 +272,7 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 	}
 	m.menu.SetSize(msg.Width, menuHeight)
 	m.windowWidth = msg.Width
+	m.windowHeight = msg.Height
 
 	if m.orchestrationOverlay != nil {
 		m.orchestrationOverlay.SetSize(msg.Width, msg.Height)
@@ -268,13 +298,45 @@ func (m *home) Init() tea.Cmd {
 		reconcileTickCmd(),
 		sessionSaveTickCmd(),
 		conflictCheckTickCmd(),
+		statusBarTickCmd(),
 	)
 }
 
 func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Guard against state desync: if an overlay was supposed to be shown but its
+	// backing field is nil, reset to stateDefault so View() renders correctly.
+	// This is the right place for state mutation — never inside View().
+	switch m.state {
+	case statePrompt:
+		if m.textInputOverlay == nil {
+			m.state = stateDefault
+		}
+	case stateHelp:
+		if m.textOverlay == nil {
+			m.state = stateDefault
+		}
+	case stateConfirm:
+		if m.confirmationOverlay == nil {
+			m.state = stateDefault
+		}
+	case stateReview:
+		if m.reviewOverlay == nil {
+			m.state = stateDefault
+		}
+	case stateQuickDispatch:
+		if m.quickDispatchOverlay == nil {
+			m.state = stateDefault
+		}
+	}
+
 	switch msg := msg.(type) {
 	case hideErrMsg:
 		m.errBox.Clear()
+	case wakeBannerDismissMsg:
+		if msg.seq == m.wakeBannerSeq {
+			m.wakeBanner = ""
+		}
+		return m, nil
 	case previewTickMsg:
 		cmd := m.instanceChanged()
 		return m, tea.Batch(
@@ -288,30 +350,39 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.menu.ClearKeydown()
 		return m, nil
 	case reconcileTickMsg:
+		// If setup was missing on startup, try loading the account config on each tick.
+		// This lets the banner clear automatically after the user runs `maestro setup`
+		// in another terminal, without requiring a restart.
+		if m.setupNeeded {
+			if cfg, err := accounts.LoadConductorConfig(); err == nil && cfg != nil {
+				m.setupNeeded = false
+				m.conductorConfig = cfg
+			}
+		}
 		if m.conductorConfig != nil {
+			capturedSeq := m.registryMutationSeq
+			conductorCfgSnapshot := m.conductorConfig
 			return m, tea.Batch(
 				reconcileTickCmd(),
 				func() tea.Msg {
 					base, err := accounts.ConductorDir()
 					if err != nil {
-						return reconcileDoneMsg{err: err}
+						return reconcileDoneMsg{err: err, capturedSeq: capturedSeq}
 					}
 					store, err := orchestration.NewTaskStore()
 					if err != nil {
-						return reconcileDoneMsg{err: err}
+						return reconcileDoneMsg{err: err, capturedSeq: capturedSeq}
 					}
 					regPath := filepath.Join(base, "registry.json")
 					result, reg, err := orchestration.Reconcile(orchestration.RealTmuxChecker{}, regPath, store)
 
 					// Collect usage data alongside reconciliation
-					if m.conductorConfig != nil {
-						usageReport, _ := orchestration.CollectUsage(m.conductorConfig)
-						if usageReport != nil {
-							orchestration.SaveUsageReport(usageReport)
-						}
+					usageReport, _ := orchestration.CollectUsage(conductorCfgSnapshot)
+					if usageReport != nil {
+						orchestration.SaveUsageReport(usageReport)
 					}
 
-					return reconcileDoneMsg{result: result, registry: reg, err: err}
+					return reconcileDoneMsg{result: result, registry: reg, err: err, capturedSeq: capturedSeq}
 				},
 			)
 		}
@@ -329,6 +400,24 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(msg.result.StatusCorrected) > 0 {
 				log.InfoLog.Printf("reconciliation: corrected status files: %v", msg.result.StatusCorrected)
 			}
+			if len(msg.result.DAGDispatched) > 0 {
+				log.InfoLog.Printf("reconciliation: DAG dispatched tasks: %v", msg.result.DAGDispatched)
+				// Deliver newly dispatched DAG tasks to their workers' tmux sessions.
+				if msg.registry != nil {
+					store, storeErr := orchestration.NewTaskStore()
+					if storeErr == nil {
+						orchestration.SendDAGDispatchedTasks(msg.result.DAGDispatched, store, msg.registry)
+					} else {
+						log.ErrorLog.Printf("reconciliation: failed to create task store for DAG dispatch: %v", storeErr)
+					}
+				}
+			}
+			if len(msg.result.DAGBlocked) > 0 {
+				log.InfoLog.Printf("reconciliation: DAG blocked tasks: %v", msg.result.DAGBlocked)
+			}
+			if len(msg.result.DAGUnblocked) > 0 {
+				log.InfoLog.Printf("reconciliation: DAG unblocked tasks: %v", msg.result.DAGUnblocked)
+			}
 			// Notify on dead sessions
 			for _, name := range msg.result.DeadSessions {
 				notify.NotifyTaskFailed(name, "worker session died")
@@ -338,8 +427,10 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				notify.NotifyTaskFailed("", fmt.Sprintf("task %s failed", taskID))
 			}
 		}
-		// Write updated registry on the main loop (no contention with updateRegistry)
-		if msg.registry != nil {
+		// Write updated registry on the main loop (no contention with updateRegistry).
+		// If the registry changed after reconciliation started, skip the stale snapshot
+		// to avoid overwriting user changes.
+		if msg.registry != nil && msg.capturedSeq == m.registryMutationSeq {
 			base, err := accounts.ConductorDir()
 			if err == nil && base != "" {
 				regPath := filepath.Join(base, "registry.json")
@@ -347,13 +438,71 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					log.ErrorLog.Printf("reconciliation: failed to write registry: %v", err)
 				}
 			}
+		} else if msg.registry != nil {
+			log.InfoLog.Printf("reconciliation: discarding stale registry snapshot (seq %d vs current %d)",
+				msg.capturedSeq, m.registryMutationSeq)
 		}
 		// Wake detection (safe — on main loop now)
-		if time.Since(m.lastReconcileTime) > 30*time.Second {
-			log.InfoLog.Printf("reconciliation: detected wake from sleep (gap: %v)", time.Since(m.lastReconcileTime))
+		if time.Since(m.lastReconcileTime) > 30*time.Second && !m.lastReconcileTime.IsZero() {
+			gap := time.Since(m.lastReconcileTime)
+			log.InfoLog.Printf("reconciliation: detected wake from sleep (gap: %v)", gap)
+			m.wakeBanner = "System resumed after sleep — reconciling state. Check workers with 'o'."
+			m.wakeBannerSeq++
+			capturedSeq := m.wakeBannerSeq
+			m.lastReconcileTime = time.Now()
+			// Return with auto-dismiss timer AND the next reconcile tick
+			return m, tea.Batch(
+				reconcileTickCmd(),
+				tea.Tick(10*time.Second, func(t time.Time) tea.Msg {
+					return wakeBannerDismissMsg{seq: capturedSeq}
+				}),
+			)
 		}
 		m.lastReconcileTime = time.Now()
 		return m, nil
+	case statusBarTickMsg:
+		// Collect status bar counts, orchestration overlay data, and log lines in
+		// a background goroutine so disk I/O never blocks the BubbleTea main loop.
+		// Results are delivered back via uiCacheRefreshMsg and applied on the main
+		// loop by SetCounts/SetCachedData/SetLines — eliminating data races.
+		if m.conductorConfig != nil {
+			sb := m.statusBar
+			orch := m.orchestrationOverlay
+			logV := m.logViewerOverlay
+			orchVisible := orch != nil && orch.IsVisible() && orch.NeedsRefresh()
+			logVisible := logV != nil && logV.IsVisible() && logV.NeedsRefresh()
+			return m, tea.Batch(
+				statusBarTickCmd(),
+				func() tea.Msg {
+					// Collect all data off the main loop.
+					var sbCounts ui.TaskCounts
+					if sb != nil {
+						sbCounts, _ = ui.CollectStatusBarCounts()
+					}
+					var orchData overlay.OrchCachedData
+					if orchVisible {
+						orchData = overlay.CollectOrchData()
+					}
+					var logLines []string
+					if logVisible {
+						logLines = overlay.CollectLogLines()
+					}
+					// Return a function that applies the results on the main loop.
+					return uiCacheRefreshMsg{apply: func() {
+						if sb != nil {
+							sb.SetCounts(sbCounts)
+						}
+						if orchVisible {
+							orch.SetCachedData(orchData)
+						}
+						if logVisible && logLines != nil {
+							logV.SetLines(logLines)
+						}
+					}}
+				},
+			)
+		}
+		return m, statusBarTickCmd()
 	case sessionSaveTickMsg:
 		if m.conductorConfig != nil {
 			m.saveSessionState()
@@ -400,7 +549,115 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				r.instance.SetDiffStats(r.diffStats)
 			}
+			// Apply pre-fetched preview content (captured off the main loop) to the
+			// selected instance's preview pane — no subprocess on the main goroutine.
+			if r.previewFetched && r.instance == m.list.GetSelectedInstance() {
+				m.tabbedWindow.SetPreviewContent(r.previewContent)
+			}
 		}
+
+		// Stall detection — check every ~5s (every 10th metadata tick at 500ms)
+		m.stallCheckCounter++
+		var tasksToFail []string // task IDs to mark failed in background
+		if m.stallCheckCounter >= 10 && m.conductorConfig != nil {
+			m.stallCheckCounter = 0
+			stallThreshold := time.Duration(m.conductorConfig.StallWarnSeconds) * time.Second
+			if stallThreshold == 0 {
+				stallThreshold = orchestration.DefaultStallThreshold
+			}
+			stallTimeout := time.Duration(m.conductorConfig.StallTimeoutSeconds) * time.Second
+
+			store, storeErr := orchestration.NewTaskStore()
+			if storeErr == nil {
+				for _, r := range msg.results {
+					instName := r.instance.Title
+					if r.instance.Account == "" {
+						continue // not a conductor instance
+					}
+
+					// Check if this instance has an in_progress task
+					tasks, _ := store.ForInstance(instName)
+					hasActiveTask := false
+					for _, t := range tasks {
+						if t.Status == orchestration.StatusInProgress {
+							hasActiveTask = true
+							break
+						}
+					}
+
+					if !hasActiveTask {
+						delete(m.stalledInstances, instName)
+						continue
+					}
+
+					lastChange, ok := m.lastOutputChange[instName]
+					if !ok {
+						continue
+					}
+
+					sinceLast := time.Since(lastChange)
+
+					// Check timeout first (more severe)
+					if stallTimeout > 0 && sinceLast > stallTimeout {
+						// Collect task IDs to mark failed in a background Cmd
+						for _, t := range tasks {
+							if t.Status == orchestration.StatusInProgress {
+								tasksToFail = append(tasksToFail, t.ID)
+							}
+						}
+						delete(m.stalledInstances, instName)
+						continue
+					}
+
+					// Check stall warning
+					if sinceLast > stallThreshold {
+						if _, alreadyFlagged := m.stalledInstances[instName]; !alreadyFlagged {
+							m.stalledInstances[instName] = time.Now()
+							log.WarningLog.Printf("stall detected: %s has had no output change for %s", instName, sinceLast.Round(time.Second))
+							if m.conductorConfig.Notifications.Enabled && m.conductorConfig.Notifications.WorkerStalled {
+								notify.NotifyWorkerStalled(instName, sinceLast)
+							}
+						}
+					} else {
+						// Output resumed — clear stall flag
+						if _, wasFlagged := m.stalledInstances[instName]; wasFlagged {
+							log.InfoLog.Printf("stall cleared: %s output resumed", instName)
+							delete(m.stalledInstances, instName)
+						}
+					}
+				}
+			}
+		}
+
+		if len(tasksToFail) > 0 {
+			return m, tea.Batch(
+				tickUpdateMetadataCmd(m.snapshotActiveInstances()),
+				func() tea.Msg {
+					store, err := orchestration.NewTaskStore()
+					if err != nil {
+						return nil
+					}
+					for _, id := range tasksToFail {
+						task, err := store.Get(id)
+						if err != nil {
+							continue
+						}
+						if task.Status == orchestration.StatusInProgress {
+							task.Status = orchestration.StatusFailed
+							errMsg := "stalled: no output change exceeded timeout"
+							task.Error = &errMsg
+							if updateErr := store.Update(task); updateErr != nil {
+								log.ErrorLog.Printf("stall timeout: failed to update task %s: %v", id, updateErr)
+							} else {
+								notify.NotifyTaskFailed(id, "stall timeout")
+							}
+						}
+					}
+					return stallTimeoutMsg{taskIDs: tasksToFail}
+				},
+			)
+		}
+
 		return m, tickUpdateMetadataCmd(m.snapshotActiveInstances())
 	case tea.MouseMsg:
 		// Handle mouse wheel events for scrolling the diff/preview pane
@@ -442,9 +699,112 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case error:
 		// Handle errors from confirmation actions
 		return m, m.handleError(msg)
+	case instanceKilledMsg:
+		// I/O is done; mutate list and registry safely on the main loop.
+		// Use RemoveByName (pure in-memory) — instance.Kill() already ran in the goroutine.
+		m.tabbedWindow.CleanupTerminalForInstance(msg.title)
+		m.list.RemoveByName(msg.title)
+		m.updateRegistry()
+		return m, m.instanceChanged()
+	case mergeResultMsg:
+		if msg.err != nil {
+			return m, m.handleError(fmt.Errorf("merge failed for %s: %s: %w", msg.branch, msg.output, msg.err))
+		}
+		m.errBox.SetMessage(fmt.Sprintf("Merged %s", msg.branch))
+		return m, func() tea.Msg {
+			select {
+			case <-m.ctx.Done():
+			case <-time.After(3 * time.Second):
+			}
+			return hideErrMsg{}
+		}
+	case helpTriggerMsg:
+		// showHelpScreen mutates model state and must run on the main loop.
+		return m.showHelpScreen(msg.helpType, msg.onDismiss)
 	case instanceChangedMsg:
 		// Handle instance changed after confirmation action
 		return m, m.instanceChanged()
+	case uiCacheRefreshMsg:
+		// Apply pre-collected UI cache data on the main loop to avoid races
+		// between the collection goroutine and Render() reads.
+		if msg.apply != nil {
+			msg.apply()
+		}
+		return m, nil
+	case instanceDetachedMsg:
+		// Handle return from tmux attach — refresh state
+		m.state = stateDefault
+		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
+	case orchPreviewLoadedMsg:
+		// Deliver background-loaded result file content to the orchestration overlay.
+		if m.orchestrationOverlay != nil {
+			m.orchestrationOverlay.SetPreviewContent(msg.taskID, msg.content)
+		}
+		return m, nil
+	case promptSentMsg:
+		// No-op: prompt was sent asynchronously; log for debugging.
+		log.InfoLog.Printf("prompt sent to instance %q", msg.name)
+		return m, nil
+	case quickDispatchResultMsg:
+		if msg.err != nil {
+			return m, m.handleError(fmt.Errorf("quick dispatch failed: %w", msg.err))
+		}
+		log.InfoLog.Printf("quick dispatch succeeded: task %q", msg.taskID)
+		return m, nil
+	case bulkRetryCountMsg:
+		if msg.err != nil {
+			return m, m.handleError(msg.err)
+		}
+		if msg.totalFailed == 0 {
+			return m, m.handleError(fmt.Errorf("no failed or timed-out tasks to retry"))
+		}
+		message := fmt.Sprintf("Retry %d failed/timed-out tasks across %d idle workers?", msg.totalFailed, msg.idleWorkers)
+		retryAction := func() tea.Msg {
+			result, err := orchestration.RunBulkRetry(orchestration.BulkRetryOptions{})
+			return bulkRetryResultMsg{result: result, err: err}
+		}
+		return m, m.confirmAction(message, retryAction)
+	case bulkRetryResultMsg:
+		if msg.err != nil {
+			return m, m.handleError(msg.err)
+		}
+		r := msg.result
+		summary := fmt.Sprintf("Retried %d/%d tasks", r.Retried, r.Total)
+		if r.Skipped > 0 {
+			summary += fmt.Sprintf(", %d skipped", r.Skipped)
+		}
+		if r.Failed > 0 {
+			summary += fmt.Sprintf(", %d errors", r.Failed)
+		}
+		m.errBox.SetMessage(summary)
+		return m, nil
+	case stallTimeoutMsg:
+		for _, id := range msg.taskIDs {
+			log.WarningLog.Printf("stall timeout: task %s marked failed", id)
+		}
+		return m, nil
+	case pauseCompleteMsg:
+		if msg.err != nil {
+			return m, m.handleError(msg.err)
+		}
+		if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
+			log.ErrorLog.Printf("failed to save instances after pause: %v", err)
+		}
+		m.updateRegistry()
+		m.tabbedWindow.CleanupTerminalForInstance(msg.name)
+		return m, m.instanceChanged()
+	case resumeCompleteMsg:
+		if msg.err != nil {
+			return m, m.handleError(msg.err)
+		}
+		if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
+			return m, m.handleError(err)
+		}
+		m.updateRegistry()
+		return m, tea.WindowSize()
+	case menuStateMsg:
+		m.menu.SetState(msg.state)
+		return m, nil
 	case instanceStartedMsg:
 		// Select the instance that just started (or failed)
 		m.list.SelectInstance(msg.instance)
@@ -468,12 +828,23 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.menu.SetState(ui.StatePrompt)
 			m.textInputOverlay = m.newPromptOverlay()
 		} else {
-			// If instance has a prompt (set from Shift+N flow), send it now
+			// If instance has a prompt (set from Shift+N flow), send it now via a tea.Cmd
+			// so the sleep inside SendPrompt (or any startup delay) does not block Update().
 			if msg.instance.Prompt != "" {
-				if err := msg.instance.SendPrompt(msg.instance.Prompt); err != nil {
-					log.ErrorLog.Printf("failed to send prompt: %v", err)
+				inst := msg.instance
+				prompt := inst.Prompt
+				inst.Prompt = ""
+				sendCmd := func() tea.Msg {
+					// Brief pause to let Claude Code finish starting before injecting the prompt.
+					time.Sleep(100 * time.Millisecond)
+					if err := inst.SendPrompt(prompt); err != nil {
+						log.ErrorLog.Printf("failed to send prompt: %v", err)
+					}
+					return promptSentMsg{name: inst.Title}
 				}
-				msg.instance.Prompt = ""
+				m.menu.SetState(ui.StateDefault)
+				m.showHelpScreen(helpStart(msg.instance), nil)
+				return m, tea.Batch(tea.WindowSize(), m.instanceChanged(), sendCmd)
 			}
 			m.menu.SetState(ui.StateDefault)
 			m.showHelpScreen(helpStart(msg.instance), nil)
@@ -490,7 +861,9 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *home) handleQuit() (tea.Model, tea.Cmd) {
 	if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
-		return m, m.handleError(err)
+		// Log the error but still quit — blocking the quit on a save failure would
+		// trap the user in the TUI with no way to exit except SIGKILL.
+		log.ErrorLog.Printf("handleQuit: failed to save instances: %v", err)
 	}
 	m.updateRegistry()
 
@@ -518,6 +891,7 @@ func (m *home) saveSessionState() {
 				Title:   inst.Title,
 				Account: inst.Account,
 				Branch:  inst.Branch,
+				Env:     inst.Env,
 			})
 		}
 	}
@@ -575,6 +949,8 @@ func (m *home) updateRegistry() {
 		entries[inst.Title] = orchestration.RegistryEntry{
 			Account:      inst.Account,
 			Role:         inst.Role,
+			Program:      inst.Program,
+			Model:        inst.Model,
 			TmuxSession:  tmux.SanitizeTmuxName(inst.Title),
 			WorktreePath: inst.GetWorktreePath(),
 			Branch:       inst.Branch,
@@ -592,691 +968,60 @@ func (m *home) updateRegistry() {
 	registryPath := filepath.Join(baseDir, "registry.json")
 	if err := orchestration.AtomicWriteJSON(registryPath, registry); err != nil {
 		log.ErrorLog.Printf("updateRegistry: failed to write registry.json: %v", err)
+		return
 	}
+	m.registryMutationSeq++
 }
 
-func (m *home) handleMenuHighlighting(msg tea.KeyMsg) (cmd tea.Cmd, returnEarly bool) {
-	// Handle menu highlighting when you press a button. We intercept it here and immediately return to
-	// update the ui while re-sending the keypress. Then, on the next call to this, we actually handle the keypress.
-	if m.keySent {
-		m.keySent = false
-		return nil, false
-	}
-	if m.state == statePrompt || m.state == stateHelp || m.state == stateConfirm ||
-		m.state == stateOrchestration || m.state == stateQuickDispatch || m.state == stateLogViewer ||
-		m.state == stateReview {
-		return nil, false
-	}
-	// If it's in the global keymap, we should try to highlight it.
-	name, ok := keys.GlobalKeyStringsMap[msg.String()]
-	if !ok {
-		return nil, false
-	}
+// handleMenuHighlighting, handleKeyPress, and regenerateInstructions live in keys.go.
 
-	if m.list.GetSelectedInstance() != nil && m.list.GetSelectedInstance().Paused() && name == keys.KeyEnter {
-		return nil, false
-	}
-	if name == keys.KeyShiftDown || name == keys.KeyShiftUp {
-		return nil, false
-	}
-
-	// Skip the menu highlighting if the key is not in the map or we are using the shift up and down keys.
-	// TODO: cleanup: when you press enter on stateNew, we use keys.KeySubmitName. We should unify the keymap.
-	if name == keys.KeyEnter && m.state == stateNew {
-		name = keys.KeySubmitName
-	}
-	m.keySent = true
-	return tea.Batch(
-		func() tea.Msg { return msg },
-		m.keydownCallback(name)), true
-}
-
-func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
-	cmd, returnEarly := m.handleMenuHighlighting(msg)
-	if returnEarly {
-		return m, cmd
-	}
-
-	if m.state == stateHelp {
-		return m.handleHelpState(msg)
-	}
-
-	if m.state == stateNew {
-		// Handle quit commands first. Don't handle q because the user might want to type that.
-		if msg.String() == "ctrl+c" {
-			m.state = stateDefault
-			m.promptAfterName = false
-			m.list.Kill()
-			return m, tea.Sequence(
-				tea.WindowSize(),
-				func() tea.Msg {
-					m.menu.SetState(ui.StateDefault)
-					return nil
-				},
-			)
+// currentWorkerInfos returns a snapshot of WorkerInfo for all active non-orchestrator
+// instances. Used to populate the orchestrator's worker table.
+func (m *home) currentWorkerInfos() []accounts.WorkerInfo {
+	var workers []accounts.WorkerInfo
+	for _, inst := range m.list.GetInstances() {
+		if inst.Account == "" || inst.Role == string(accounts.RoleOrchestrator) {
+			continue
 		}
-
-		instance := m.list.GetInstances()[m.list.NumInstances()-1]
-		switch msg.Type {
-		// Start the instance (enable previews etc) and go back to the main menu state.
-		case tea.KeyEnter:
-			if len(instance.Title) == 0 {
-				return m, m.handleError(fmt.Errorf("title cannot be empty"))
-			}
-
-			// If promptAfterName, show prompt+branch overlay before starting
-			if m.promptAfterName {
-				m.promptAfterName = false
-				m.state = statePrompt
-				m.menu.SetState(ui.StatePrompt)
-				m.textInputOverlay = m.newPromptOverlay()
-				// Trigger initial branch search (no debounce, version 0)
-				initialSearch := m.runBranchSearch("", m.textInputOverlay.BranchFilterVersion())
-				return m, tea.Batch(tea.WindowSize(), initialSearch)
-			}
-
-			// Set Loading status and finalize into the list immediately
-			instance.SetStatus(session.Loading)
-			m.newInstanceFinalizer()
-			m.promptAfterName = false
-			m.state = stateDefault
-			m.menu.SetState(ui.StateDefault)
-
-			// Return a tea.Cmd that runs instance.Start in the background
-			startCmd := func() tea.Msg {
-				err := instance.Start(true)
-				if err == nil && instance.Account != "" {
-					conductorDir, _ := accounts.ConductorDir()
-					worktreePath := instance.GetWorktreePath()
-					if worktreePath != "" && conductorDir != "" {
-						ctx := accounts.CLAUDEMDContext{
-							InstanceName:   instance.Title,
-							AccountName:    instance.Account,
-							Role:           instance.Role,
-							ConductorDir:   conductorDir,
-							StatusFilePath: filepath.Join(conductorDir, "status", instance.Title+".json"),
-						}
-						accounts.GenerateCLAUDEMD(worktreePath, ctx)
-					}
-				}
-				return instanceStartedMsg{
-					instance:        instance,
-					err:             err,
-					promptAfterName: false,
-				}
-			}
-
-			return m, tea.Batch(tea.WindowSize(), m.instanceChanged(), startCmd)
-		case tea.KeyRunes:
-			if runewidth.StringWidth(instance.Title) >= 32 {
-				return m, m.handleError(fmt.Errorf("title cannot be longer than 32 characters"))
-			}
-			if err := instance.SetTitle(instance.Title + string(msg.Runes)); err != nil {
-				return m, m.handleError(err)
-			}
-		case tea.KeyBackspace:
-			runes := []rune(instance.Title)
-			if len(runes) == 0 {
-				return m, nil
-			}
-			if err := instance.SetTitle(string(runes[:len(runes)-1])); err != nil {
-				return m, m.handleError(err)
-			}
-		case tea.KeySpace:
-			if err := instance.SetTitle(instance.Title + " "); err != nil {
-				return m, m.handleError(err)
-			}
-		case tea.KeyEsc:
-			m.list.Kill()
-			m.state = stateDefault
-			m.instanceChanged()
-
-			return m, tea.Sequence(
-				tea.WindowSize(),
-				func() tea.Msg {
-					m.menu.SetState(ui.StateDefault)
-					return nil
-				},
-			)
+		var statusStr string
+		switch inst.Status {
+		case session.Paused:
+			statusStr = "paused"
+		case session.Loading:
+			statusStr = "starting"
+		case session.Running:
+			statusStr = "running"
+		case session.Ready:
+			statusStr = "idle"
 		default:
+			statusStr = "unknown"
 		}
-		return m, nil
-	} else if m.state == statePrompt {
-		// Handle cancel via ctrl+c before delegating to the overlay
-		if msg.String() == "ctrl+c" {
-			return m, m.cancelPromptOverlay()
+		progName := inst.Program
+		if progName == "" {
+			progName = "claude"
 		}
+		modelID := inst.Model
+		modelStrengths := programs.FormatModelStrengths(modelID)
 
-		// Use the new TextInputOverlay component to handle all key events
-		shouldClose, branchFilterChanged := m.textInputOverlay.HandleKeyPress(msg)
-
-		// Check if the form was submitted or canceled
-		if shouldClose {
-			selected := m.list.GetSelectedInstance()
-			if selected == nil {
-				return m, nil
-			}
-
-			if m.textInputOverlay.IsCanceled() {
-				return m, m.cancelPromptOverlay()
-			}
-
-			if m.textInputOverlay.IsSubmitted() {
-				prompt := m.textInputOverlay.GetValue()
-				selectedBranch := m.textInputOverlay.GetSelectedBranch()
-				selectedProgram := m.textInputOverlay.GetSelectedProgram()
-
-				if !selected.Started() {
-					// Shift+N flow: instance not started yet — set branch, start, then send prompt
-					if selectedBranch != "" {
-						selected.SetSelectedBranch(selectedBranch)
-					}
-					if selectedProgram != "" {
-						selected.Program = selectedProgram
-					}
-					selected.Prompt = prompt
-
-					// Finalize into list and start
-					selected.SetStatus(session.Loading)
-					m.newInstanceFinalizer()
-					m.textInputOverlay = nil
-					m.state = stateDefault
-					m.menu.SetState(ui.StateDefault)
-
-					startCmd := func() tea.Msg {
-						err := selected.Start(true)
-						if err == nil && selected.Account != "" {
-							conductorDir, _ := accounts.ConductorDir()
-							worktreePath := selected.GetWorktreePath()
-							if worktreePath != "" && conductorDir != "" {
-								ctx := accounts.CLAUDEMDContext{
-									InstanceName:   selected.Title,
-									AccountName:    selected.Account,
-									Role:           selected.Role,
-									ConductorDir:   conductorDir,
-									StatusFilePath: filepath.Join(conductorDir, "status", selected.Title+".json"),
-								}
-								accounts.GenerateCLAUDEMD(worktreePath, ctx)
-							}
-						}
-						return instanceStartedMsg{
-							instance:        selected,
-							err:             err,
-							promptAfterName: false,
-							selectedBranch:  selectedBranch,
-						}
-					}
-
-					return m, tea.Batch(tea.WindowSize(), m.instanceChanged(), startCmd)
-				}
-
-				// Regular flow: instance already running, just send prompt
-				if err := selected.SendPrompt(prompt); err != nil {
-					return m, m.handleError(err)
-				}
-			}
-
-			// Close the overlay and reset state
-			m.textInputOverlay = nil
-			m.state = stateDefault
-			return m, tea.Sequence(
-				tea.WindowSize(),
-				func() tea.Msg {
-					m.menu.SetState(ui.StateDefault)
-					m.showHelpScreen(helpStart(selected), nil)
-					return nil
-				},
-			)
-		}
-
-		// Schedule a debounced branch search if the filter changed
-		if branchFilterChanged {
-			filter := m.textInputOverlay.BranchFilter()
-			version := m.textInputOverlay.BranchFilterVersion()
-			return m, m.scheduleBranchSearch(filter, version)
-		}
-
-		return m, nil
-	}
-
-	// Handle confirmation state
-	if m.state == stateConfirm {
-		shouldClose := m.confirmationOverlay.HandleKeyPress(msg)
-		if shouldClose {
-			m.state = stateDefault
-			m.confirmationOverlay = nil
-			return m, nil
-		}
-		return m, nil
-	}
-
-	if m.state == stateOrchestration {
-		if m.orchestrationOverlay.HandleKeyPress(msg) {
-			m.orchestrationOverlay.Close()
-			m.state = stateDefault
-		}
-		return m, nil
-	}
-
-	if m.state == stateLogViewer {
-		if m.logViewerOverlay.HandleKeyPress(msg) {
-			m.logViewerOverlay.Close()
-			m.state = stateDefault
-		}
-		return m, nil
-	}
-
-	if m.state == stateReview {
-		if m.reviewOverlay.HandleKeyPress(msg) {
-			action := m.reviewOverlay.GetAction()
-			m.reviewOverlay = nil
-			m.state = stateDefault
-
-			switch action {
-			case overlay.ReviewApprove:
-				// Merge the worker's branch
-				selected := m.list.GetSelectedInstance()
-				if selected != nil {
-					branch := selected.Branch
-					title := selected.Title
-					go func() {
-						mergeCmd := exec.Command("git", "merge", "--no-ff", branch,
-							"-m", fmt.Sprintf("conductor: merge %s", title))
-						if out, err := mergeCmd.CombinedOutput(); err != nil {
-							log.ErrorLog.Printf("merge failed for %s: %s: %v", branch, string(out), err)
-						}
-					}()
-					m.errBox.SetError(fmt.Errorf("Merged %s", selected.Branch))
-				}
-			case overlay.ReviewEdit:
-				// Open quick-dispatch to re-dispatch to the same worker
-				selected := m.list.GetSelectedInstance()
-				if selected != nil {
-					workers := []string{selected.Title}
-					m.quickDispatchOverlay = overlay.NewQuickDispatchOverlay(workers)
-					m.quickDispatchOverlay.SetWidth(m.windowWidth)
-					m.state = stateQuickDispatch
-					return m, nil
-				}
-			case overlay.ReviewSkip:
-				// Intentional no-op — return to default state
-			}
-			return m, nil
-		}
-		return m, nil
-	}
-
-	if m.state == stateQuickDispatch {
-		if msg.String() == "ctrl+c" {
-			m.quickDispatchOverlay = nil
-			m.state = stateDefault
-			return m, nil
-		}
-		shouldClose := m.quickDispatchOverlay.HandleKeyPress(msg)
-		if shouldClose {
-			if m.quickDispatchOverlay.IsSubmitted() {
-				worker := m.quickDispatchOverlay.GetWorker()
-				task := m.quickDispatchOverlay.GetTask()
-				// Dispatch in background
-				go func() {
-					_, err := orchestration.RunDispatch(worker, task, "")
-					if err != nil {
-						log.ErrorLog.Printf("quick dispatch failed: %v", err)
-					}
-				}()
-			}
-			m.quickDispatchOverlay = nil
-			m.state = stateDefault
-		}
-		return m, nil
-	}
-
-	// Exit scrolling mode when ESC is pressed and preview pane is in scrolling mode
-	// Check if Escape key was pressed and we're not in the diff tab (meaning we're in preview tab)
-	// Always check for escape key first to ensure it doesn't get intercepted elsewhere
-	if msg.Type == tea.KeyEsc {
-		// If in preview tab and in scroll mode, exit scroll mode
-		if m.tabbedWindow.IsInPreviewTab() && m.tabbedWindow.IsPreviewInScrollMode() {
-			// Use the selected instance from the list
-			selected := m.list.GetSelectedInstance()
-			err := m.tabbedWindow.ResetPreviewToNormalMode(selected)
-			if err != nil {
-				return m, m.handleError(err)
-			}
-			return m, m.instanceChanged()
-		}
-		// If in terminal tab and in scroll mode, exit scroll mode
-		if m.tabbedWindow.IsInTerminalTab() && m.tabbedWindow.IsTerminalInScrollMode() {
-			m.tabbedWindow.ResetTerminalToNormalMode()
-			return m, m.instanceChanged()
-		}
-	}
-
-	// Handle quit commands first
-	if msg.String() == "ctrl+c" || msg.String() == "q" {
-		return m.handleQuit()
-	}
-
-	name, ok := keys.GlobalKeyStringsMap[msg.String()]
-	if !ok {
-		return m, nil
-	}
-
-	switch name {
-	case keys.KeyHelp:
-		return m.showHelpScreen(helpTypeGeneral{}, nil)
-	case keys.KeyPrompt:
-		if m.list.NumInstances() >= GlobalInstanceLimit {
-			return m, m.handleError(
-				fmt.Errorf("you can't create more than %d instances", GlobalInstanceLimit))
-		}
-
-		// Start a background fetch so branches are up to date by the time the picker opens
-		fetchCmd := func() tea.Msg {
-			currentDir, _ := os.Getwd()
-			git.FetchBranches(currentDir)
-			return nil
-		}
-
-		promptOpts := session.InstanceOptions{
-			Title:   "",
-			Path:    ".",
-			Program: m.program,
-		}
-		if m.conductorConfig != nil {
-			acct := m.nextAvailableAccount()
-			if acct == nil {
-				return m, m.handleError(fmt.Errorf("all accounts have active instances — pause or kill one first"))
-			}
-			promptOpts.Account = acct.Name
-			promptOpts.Role = string(acct.Role)
-			promptOpts.Env = map[string]string{"CLAUDE_CONFIG_DIR": acct.ConfigDir}
-		}
-
-		instance, err := session.NewInstance(promptOpts)
-		if err != nil {
-			return m, m.handleError(err)
-		}
-
-		m.newInstanceFinalizer = m.list.AddInstance(instance)
-		m.list.SetSelectedInstance(m.list.NumInstances() - 1)
-		m.state = stateNew
-		m.menu.SetState(ui.StateNewInstance)
-		m.promptAfterName = true
-
-		return m, fetchCmd
-	case keys.KeyNew:
-		if m.list.NumInstances() >= GlobalInstanceLimit {
-			return m, m.handleError(
-				fmt.Errorf("you can't create more than %d instances", GlobalInstanceLimit))
-		}
-
-		opts := session.InstanceOptions{
-			Title:   "",
-			Path:    ".",
-			Program: m.program,
-		}
-		if m.conductorConfig != nil {
-			acct := m.nextAvailableAccount()
-			if acct == nil {
-				return m, m.handleError(fmt.Errorf("all accounts have active instances — pause or kill one first"))
-			}
-			opts.Account = acct.Name
-			opts.Role = string(acct.Role)
-			opts.Env = map[string]string{"CLAUDE_CONFIG_DIR": acct.ConfigDir}
-		}
-
-		instance, err := session.NewInstance(opts)
-		if err != nil {
-			return m, m.handleError(err)
-		}
-
-		m.newInstanceFinalizer = m.list.AddInstance(instance)
-		m.list.SetSelectedInstance(m.list.NumInstances() - 1)
-		m.state = stateNew
-		m.menu.SetState(ui.StateNewInstance)
-
-		return m, nil
-	case keys.KeyUp:
-		m.list.Up()
-		return m, m.instanceChanged()
-	case keys.KeyDown:
-		m.list.Down()
-		return m, m.instanceChanged()
-	case keys.KeyShiftUp:
-		m.tabbedWindow.ScrollUp()
-		return m, m.instanceChanged()
-	case keys.KeyShiftDown:
-		m.tabbedWindow.ScrollDown()
-		return m, m.instanceChanged()
-	case keys.KeyTab:
-		m.tabbedWindow.Toggle()
-		m.menu.SetActiveTab(m.tabbedWindow.GetActiveTab())
-		return m, m.instanceChanged()
-	case keys.KeyKill:
-		selected := m.list.GetSelectedInstance()
-		if selected == nil || selected.Status == session.Loading {
-			return m, nil
-		}
-
-		// Create the kill action as a tea.Cmd
-		killAction := func() tea.Msg {
-			// Get worktree and check if branch is checked out
-			worktree, err := selected.GetGitWorktree()
-			if err != nil {
-				return err
-			}
-
-			checkedOut, err := worktree.IsBranchCheckedOut()
-			if err != nil {
-				return err
-			}
-
-			if checkedOut {
-				return fmt.Errorf("instance %s is currently checked out", selected.Title)
-			}
-
-			// Clean up terminal session for this instance
-			m.tabbedWindow.CleanupTerminalForInstance(selected.Title)
-
-			// Delete from storage first
-			if err := m.storage.DeleteInstance(selected.Title); err != nil {
-				return err
-			}
-
-			// Then kill the instance
-			m.list.Kill()
-			m.updateRegistry()
-			return instanceChangedMsg{}
-		}
-
-		// Show confirmation modal
-		message := fmt.Sprintf("[!] Kill session '%s'?", selected.Title)
-		return m, m.confirmAction(message, killAction)
-	case keys.KeySubmit:
-		selected := m.list.GetSelectedInstance()
-		if selected == nil || selected.Status == session.Loading {
-			return m, nil
-		}
-
-		// Create the push action as a tea.Cmd
-		pushAction := func() tea.Msg {
-			// Default commit message with timestamp
-			commitMsg := fmt.Sprintf("[conductor] update from '%s' on %s", selected.Title, time.Now().Format(time.RFC822))
-			worktree, err := selected.GetGitWorktree()
-			if err != nil {
-				return err
-			}
-			if err = worktree.PushChanges(commitMsg, true); err != nil {
-				return err
-			}
-			return nil
-		}
-
-		// Show confirmation modal
-		message := fmt.Sprintf("[!] Push changes from session '%s'?", selected.Title)
-		return m, m.confirmAction(message, pushAction)
-	case keys.KeyCheckout:
-		selected := m.list.GetSelectedInstance()
-		if selected == nil || selected.Status == session.Loading {
-			return m, nil
-		}
-
-		// Show help screen before pausing
-		m.showHelpScreen(helpTypeInstanceCheckout{}, func() {
-			if err := selected.Pause(); err != nil {
-				m.handleError(err)
-			}
-			if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
-				log.ErrorLog.Printf("failed to save instances after pause: %v", err)
-			}
-			m.updateRegistry()
-			m.tabbedWindow.CleanupTerminalForInstance(selected.Title)
-			m.instanceChanged()
+		workers = append(workers, accounts.WorkerInfo{
+			Title:          inst.Title,
+			Account:        inst.Account,
+			Status:         statusStr,
+			Program:        progName,
+			Model:          modelID,
+			ModelStrengths: modelStrengths,
 		})
-		return m, nil
-	case keys.KeyResume:
-		selected := m.list.GetSelectedInstance()
-		if selected == nil || selected.Status == session.Loading {
-			return m, nil
-		}
-
-		// If paused, resume (existing behavior)
-		if selected.Paused() {
-			if err := selected.Resume(); err != nil {
-				return m, m.handleError(err)
-			}
-			if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
-				return m, m.handleError(err)
-			}
-			m.updateRegistry()
-			// Regenerate CLAUDE.md on resume (reflects current worker list)
-			if selected.Account != "" {
-				conductorDir, _ := accounts.ConductorDir()
-				worktreePath := selected.GetWorktreePath()
-				if worktreePath != "" && conductorDir != "" {
-					ctx := accounts.CLAUDEMDContext{
-						InstanceName:   selected.Title,
-						AccountName:    selected.Account,
-						Role:           selected.Role,
-						ConductorDir:   conductorDir,
-						StatusFilePath: filepath.Join(conductorDir, "status", selected.Title+".json"),
-					}
-					accounts.GenerateCLAUDEMD(worktreePath, ctx)
-				}
-			}
-			return m, tea.WindowSize()
-		}
-
-		// If running worker with conductor config, open review overlay
-		if m.conductorConfig != nil && selected.Account != "" && selected.Role == string(accounts.RoleWorker) {
-			m.reviewOverlay = overlay.NewReviewOverlay(selected.Title, selected.Branch, "main")
-			m.reviewOverlay.SetSize(m.windowWidth, 0)
-			m.state = stateReview
-			return m, nil
-		}
-
-		return m, nil
-	case keys.KeyOrchestration:
-		if m.orchestrationOverlay.IsVisible() {
-			m.orchestrationOverlay.Close()
-			m.state = stateDefault
-		} else {
-			m.orchestrationOverlay.Toggle()
-			m.state = stateOrchestration
-		}
-		return m, nil
-	case keys.KeyQuickDispatch:
-		if m.conductorConfig == nil {
-			return m, nil // no conductor mode
-		}
-		// Get worker names from the current instance list
-		var workers []string
-		for _, inst := range m.list.GetInstances() {
-			if inst.Role == string(accounts.RoleWorker) && inst.Status != session.Paused {
-				workers = append(workers, inst.Title)
-			}
-		}
-		m.quickDispatchOverlay = overlay.NewQuickDispatchOverlay(workers)
-		m.quickDispatchOverlay.SetWidth(m.windowWidth)
-		m.state = stateQuickDispatch
-		return m, nil
-	case keys.KeyLogViewer:
-		if m.logViewerOverlay.IsVisible() {
-			m.logViewerOverlay.Close()
-			m.state = stateDefault
-		} else {
-			m.logViewerOverlay.Toggle()
-			m.state = stateLogViewer
-		}
-		return m, nil
-	case keys.KeyDiff:
-		// Toggle to diff tab in the tabbed window
-		if m.list.GetSelectedInstance() != nil {
-			m.tabbedWindow.SetActiveTab(1) // Diff tab
-			m.menu.SetActiveTab(1)
-		}
-		return m, m.instanceChanged()
-	case keys.KeyPreviewToggle:
-		// Toggle between preview tabs
-		if m.list.GetSelectedInstance() != nil {
-			m.tabbedWindow.Toggle()
-			m.menu.SetActiveTab(m.tabbedWindow.GetActiveTab())
-		}
-		return m, m.instanceChanged()
-	case keys.KeyHistory:
-		// Show tasks overlay (reuse orchestration overlay for now)
-		if m.conductorConfig != nil {
-			if m.orchestrationOverlay.IsVisible() {
-				m.orchestrationOverlay.Close()
-				m.state = stateDefault
-			} else {
-				m.orchestrationOverlay.Toggle()
-				m.state = stateOrchestration
-			}
-		}
-		return m, nil
-	case keys.KeyEnter:
-		if m.list.NumInstances() == 0 {
-			return m, nil
-		}
-		selected := m.list.GetSelectedInstance()
-		if selected == nil || selected.Paused() || selected.Status == session.Loading || !selected.TmuxAlive() {
-			return m, nil
-		}
-		// Terminal tab: attach to terminal session
-		if m.tabbedWindow.IsInTerminalTab() {
-			m.showHelpScreen(helpTypeInstanceAttach{}, func() {
-				ch, err := m.tabbedWindow.AttachTerminal()
-				if err != nil {
-					m.handleError(err)
-					return
-				}
-				<-ch
-				m.state = stateDefault
-			})
-			return m, nil
-		}
-		// Show help screen before attaching
-		m.showHelpScreen(helpTypeInstanceAttach{}, func() {
-			ch, err := m.list.Attach()
-			if err != nil {
-				m.handleError(err)
-				return
-			}
-			<-ch
-			m.state = stateDefault
-			m.instanceChanged()
-		})
-		return m, nil
-	default:
-		return m, nil
 	}
+	return workers
 }
 
-// nextAvailableAccount returns the first account that does not have an active
-// (Running or Starting) instance, or nil if all accounts are occupied.
-func (m *home) nextAvailableAccount() *accounts.Account {
+// nextAvailableAccount returns an available account that does not have an active
+// (Running or Starting) instance. preferredRole controls which accounts are
+// preferred: pass accounts.RoleWorker to skip orchestrator accounts (for generic
+// worker creation), or accounts.RoleOrchestrator to prefer the orchestrator.
+// Falls back to any available account if no match for the preferred role exists.
+// Returns nil if all accounts are occupied.
+func (m *home) nextAvailableAccount(preferredRole accounts.Role) *accounts.Account {
 	if m.conductorConfig == nil {
 		return nil
 	}
@@ -1290,6 +1035,15 @@ func (m *home) nextAvailableAccount() *accounts.Account {
 		}
 	}
 
+	// First pass: prefer accounts matching the requested role.
+	for i := range m.conductorConfig.Accounts {
+		acct := &m.conductorConfig.Accounts[i]
+		if !activeAccounts[acct.Name] && acct.Role == preferredRole {
+			return acct
+		}
+	}
+
+	// Second pass: fall back to any available account.
 	for i := range m.conductorConfig.Accounts {
 		acct := &m.conductorConfig.Accounts[i]
 		if !activeAccounts[acct.Name] {
@@ -1300,8 +1054,11 @@ func (m *home) nextAvailableAccount() *accounts.Account {
 	return nil
 }
 
-// instanceChanged updates the preview pane, menu, and diff pane based on the selected instance. It returns an error
-// Cmd if there was any error.
+// instanceChanged updates the preview pane, menu, and diff pane based on the selected instance.
+// The tmux capture-pane subprocess is NOT called here; it is run in the background by
+// tickUpdateMetadataCmd and the result is applied via metadataUpdateDoneMsg.SetPreviewContent.
+// For non-running states (nil, Loading, Paused) UpdatePreview is still called because those
+// paths do no subprocess I/O (they just set fallback text).
 func (m *home) instanceChanged() tea.Cmd {
 	// selected may be nil
 	selected := m.list.GetSelectedInstance()
@@ -1311,10 +1068,15 @@ func (m *home) instanceChanged() tea.Cmd {
 	// Update menu with current instance
 	m.menu.SetInstance(selected)
 
-	// If there's no selected instance, we don't need to update the preview.
-	if err := m.tabbedWindow.UpdatePreview(selected); err != nil {
-		return m.handleError(err)
+	// Call UpdatePreview only for states that don't require subprocess I/O (nil / Loading / Paused).
+	// For running instances the preview content is delivered by metadataUpdateDoneMsg to avoid
+	// blocking the main loop with a tmux capture-pane call every 100 ms.
+	if selected == nil || selected.Status == session.Loading || selected.Status == session.Paused {
+		if err := m.tabbedWindow.UpdatePreview(selected); err != nil {
+			return m.handleError(err)
+		}
 	}
+
 	if err := m.tabbedWindow.UpdateTerminal(selected); err != nil {
 		return m.handleError(err)
 	}
@@ -1336,6 +1098,18 @@ func (m *home) keydownCallback(name keys.KeyName) tea.Cmd {
 	}
 }
 
+// uiCacheRefreshMsg carries a deferred function that applies freshly-collected
+// data to one or more UI components on the main BubbleTea loop. Using a
+// function avoids exposing internal data types across package boundaries.
+type uiCacheRefreshMsg struct {
+	apply func()
+}
+
+// wakeBannerDismissMsg auto-dismisses the wake-from-sleep banner.
+type wakeBannerDismissMsg struct {
+	seq int
+}
+
 // hideErrMsg implements tea.Msg and clears the error text from the screen.
 type hideErrMsg struct{}
 
@@ -1347,15 +1121,26 @@ type reconcileTickMsg struct{}
 
 // reconcileDoneMsg carries the results of a reconciliation pass back to the main loop.
 type reconcileDoneMsg struct {
-	result   *orchestration.ReconcileResult
-	registry *orchestration.Registry
-	err      error
+	result      *orchestration.ReconcileResult
+	registry    *orchestration.Registry
+	err         error
+	capturedSeq int // registryMutationSeq at the time the goroutine was launched
 }
 
 // reconcileTickCmd returns a Cmd that fires reconcileTickMsg every 5 seconds.
 func reconcileTickCmd() tea.Cmd {
 	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
 		return reconcileTickMsg{}
+	})
+}
+
+// statusBarTickMsg triggers a periodic status bar cache refresh.
+type statusBarTickMsg struct{}
+
+// statusBarTickCmd returns a Cmd that fires statusBarTickMsg every 2 seconds.
+func statusBarTickCmd() tea.Cmd {
+	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+		return statusBarTickMsg{}
 	})
 }
 
@@ -1379,11 +1164,86 @@ func conflictCheckTickCmd() tea.Cmd {
 
 type instanceChangedMsg struct{}
 
+// instanceKilledMsg is sent when killAction completes its I/O work successfully.
+// The main loop then mutates m.list and calls m.updateRegistry() on the correct goroutine.
+// title holds the instance name so the terminal pane can be cleaned up before Kill() removes it.
+type instanceKilledMsg struct {
+	title string
+}
+
+// instanceDetachedMsg is sent after the user detaches from a tmux session.
+type instanceDetachedMsg struct{}
+
+// orchPreviewLoadedMsg carries file content for the orchestration overlay's
+// result preview, loaded in a background goroutine to keep os.ReadFile off
+// the BubbleTea main loop.
+type orchPreviewLoadedMsg struct {
+	taskID  string
+	content string
+}
+
+// promptSentMsg is sent after SendPrompt completes in a background goroutine.
+type promptSentMsg struct{ name string }
+
+// quickDispatchResultMsg carries the result of a quick-dispatch orchestration call.
+type quickDispatchResultMsg struct {
+	taskID string
+	err    error
+}
+
+// pauseCompleteMsg is sent when instance.Pause() finishes in a background goroutine.
+type pauseCompleteMsg struct {
+	name string
+	err  error
+}
+
+// resumeCompleteMsg is sent when instance.Resume() finishes in a background goroutine.
+type resumeCompleteMsg struct {
+	name string
+	err  error
+}
+
+// menuStateMsg requests a m.menu.SetState() call on the main loop,
+// replacing the anti-pattern of calling SetState inside a tea.Sequence closure (data race).
+type menuStateMsg struct{ state ui.MenuState }
+
 type instanceStartedMsg struct {
 	instance        *session.Instance
 	err             error
 	promptAfterName bool
 	selectedBranch  string
+}
+
+// helpTriggerMsg requests that showHelpScreen be called from the main Update loop,
+// avoiding model mutation inside a tea.Sequence closure (which runs in a goroutine).
+type helpTriggerMsg struct {
+	helpType  helpText
+	onDismiss func() tea.Cmd
+}
+
+// mergeResultMsg carries the result of a git merge back to the main loop.
+type mergeResultMsg struct {
+	branch string
+	output string
+	err    error
+}
+
+// bulkRetryCountMsg carries the async I/O results for the bulk retry confirmation modal.
+type bulkRetryCountMsg struct {
+	totalFailed int
+	idleWorkers int
+	err         error
+}
+
+// bulkRetryResultMsg carries the result of a bulk retry operation back to the main loop.
+type bulkRetryResultMsg struct {
+	result *orchestration.BulkRetryResult
+	err    error
+}
+
+// stallTimeoutMsg is sent after stall-timeout tasks have been marked failed in the background.
+type stallTimeoutMsg struct {
+	taskIDs []string
 }
 
 // branchSearchDebounceMsg fires after the debounce interval to trigger a search.
@@ -1424,10 +1284,12 @@ func (m *home) runBranchSearch(filter string, version uint64) tea.Cmd {
 // instanceMetaResult holds the results of a single instance's metadata update,
 // computed in a background goroutine.
 type instanceMetaResult struct {
-	instance  *session.Instance
-	updated   bool
-	hasPrompt bool
-	diffStats *git.DiffStats
+	instance       *session.Instance
+	updated        bool
+	hasPrompt      bool
+	diffStats      *git.DiffStats
+	previewContent string // pre-fetched tmux pane content (empty string = no update)
+	previewFetched bool   // true when previewContent was successfully fetched
 }
 
 // metadataUpdateDoneMsg is sent when the background metadata update completes.
@@ -1471,6 +1333,12 @@ func tickUpdateMetadataCmd(active []*session.Instance) tea.Cmd {
 				r.instance = instance
 				r.updated, r.hasPrompt = instance.HasUpdated()
 				r.diffStats = instance.ComputeDiff()
+				// Capture preview content off the main loop to avoid blocking the BubbleTea
+				// goroutine with a tmux subprocess every tick.
+				if content, err := instance.Preview(); err == nil {
+					r.previewContent = content
+					r.previewFetched = true
+				}
 			}(idx, inst)
 		}
 		wg.Wait()
@@ -1505,53 +1373,89 @@ func (m *home) cancelPromptOverlay() tea.Cmd {
 		m.list.Kill()
 	}
 	m.textInputOverlay = nil
+	m.promptAfterName = false
 	m.state = stateDefault
-	return tea.Sequence(
+	return tea.Batch(
 		tea.WindowSize(),
-		func() tea.Msg {
-			m.menu.SetState(ui.StateDefault)
-			return nil
-		},
+		func() tea.Msg { return menuStateMsg{state: ui.StateDefault} },
 	)
 }
 
-// confirmAction shows a confirmation modal and stores the action to execute on confirm
+// confirmAction shows a confirmation modal and stores the action to execute on confirm.
+// When the user presses the confirm key, the stateConfirm handler will run action as a
+// tea.Cmd so its returned tea.Msg is dispatched back into the BubbleTea message bus.
 func (m *home) confirmAction(message string, action tea.Cmd) tea.Cmd {
 	m.state = stateConfirm
+	m.pendingConfirmAction = action
 
 	// Create and show the confirmation overlay using ConfirmationOverlay
 	m.confirmationOverlay = overlay.NewConfirmationOverlay(message)
 	// Set a fixed width for consistent appearance
 	m.confirmationOverlay.SetWidth(50)
 
-	// Set callbacks for confirmation and cancellation
-	m.confirmationOverlay.OnConfirm = func() {
-		m.state = stateDefault
-		// Execute the action if it exists
-		if action != nil {
-			msg := action()
-			if err, ok := msg.(error); ok {
-				log.ErrorLog.Printf("action error: %v", err)
-			}
-		}
-	}
-
-	m.confirmationOverlay.OnCancel = func() {
-		m.state = stateDefault
-	}
-
 	return nil
 }
 
+// handleBulkRetry launches background I/O to count failed tasks and idle workers,
+// then returns a bulkRetryCountMsg so the confirmation modal is shown on the main loop.
+func (m *home) handleBulkRetry() (tea.Model, tea.Cmd) {
+	return m, func() tea.Msg {
+		store, err := orchestration.NewTaskStore()
+		if err != nil {
+			return bulkRetryCountMsg{err: err}
+		}
+		failed, _ := store.List(orchestration.StatusFailed)
+		timedOut, _ := store.List(orchestration.StatusTimedOut)
+		totalFailed := len(failed) + len(timedOut)
+
+		idleCount := 0
+		reg, _ := orchestration.LoadRegistry()
+		if reg != nil {
+			for name := range reg.ListWorkers() {
+				if idle, _ := orchestration.IsWorkerIdle(name); idle {
+					idleCount++
+				}
+			}
+		}
+		return bulkRetryCountMsg{totalFailed: totalFailed, idleWorkers: idleCount}
+	}
+}
+
 func (m *home) View() string {
+	// Empty-state welcome screen: when no instances exist and no overlay is active,
+	// show a centered guidance message instead of a blank list.
+	if m.list.NumInstances() == 0 && m.state == stateDefault {
+		emptyMsg := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("245")).
+			Align(lipgloss.Center).
+			Width(m.windowWidth).
+			Render("No instances yet\n\nPress 'n' to create your first instance\nPress '?' for help\nPress 'q' to quit")
+		padding := (m.windowHeight - 6) / 2
+		if padding < 0 {
+			padding = 0
+		}
+		return strings.Repeat("\n", padding) + emptyMsg
+	}
+
 	listWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(m.list.String())
 	previewWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(m.tabbedWindow.String())
 	listAndPreview := lipgloss.JoinHorizontal(lipgloss.Top, listWithPadding, previewWithPadding)
 
-	// Add conductor status bar if in conductor mode
+	// Add the status bar when multi-account mode is active.
 	statusBarStr := ""
 	if m.conductorConfig != nil && m.statusBar != nil {
 		statusBarStr = m.statusBar.Render()
+	}
+
+	// Setup-needed banner shown when no account config exists on first run.
+	setupBannerStr := ""
+	if m.setupNeeded {
+		setupBannerStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214")).
+			Bold(true).
+			Padding(0, 1)
+		setupBannerStr = setupBannerStyle.Render(
+			"Multi-account orchestration is not configured. Run `maestro setup` to enable it.")
 	}
 
 	// Conflict banner
@@ -1564,9 +1468,25 @@ func (m *home) View() string {
 		conflictBannerStr = conflictBannerStyle.Render(m.conflictBanner)
 	}
 
+	// Wake-from-sleep banner
+	wakeBannerStr := ""
+	if m.wakeBanner != "" {
+		wakeBannerStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214")).
+			Bold(true).
+			Padding(0, 1)
+		wakeBannerStr = wakeBannerStyle.Render(m.wakeBanner)
+	}
+
 	viewParts := []string{}
+	if setupBannerStr != "" {
+		viewParts = append(viewParts, setupBannerStr)
+	}
 	if conflictBannerStr != "" {
 		viewParts = append(viewParts, conflictBannerStr)
+	}
+	if wakeBannerStr != "" {
+		viewParts = append(viewParts, wakeBannerStr)
 	}
 	viewParts = append(viewParts,
 		listAndPreview,
@@ -1584,22 +1504,28 @@ func (m *home) View() string {
 
 	if m.state == statePrompt {
 		if m.textInputOverlay == nil {
-			log.ErrorLog.Printf("text input overlay is nil")
+			// State desync: overlay is nil but state says prompt. Render safely without
+			// mutating m.state (View must be side-effect free). Update() will correct state
+			// on the next frame when the nil overlay is detected there.
+			log.ErrorLog.Printf("text input overlay is nil in statePrompt — rendering default view")
+			return mainView
 		}
 		return overlay.PlaceOverlay(0, 0, m.textInputOverlay.Render(), mainView, true, true)
 	} else if m.state == stateHelp {
 		if m.textOverlay == nil {
-			log.ErrorLog.Printf("text overlay is nil")
+			log.ErrorLog.Printf("text overlay is nil in stateHelp — rendering default view")
+			return mainView
 		}
 		return overlay.PlaceOverlay(0, 0, m.textOverlay.Render(), mainView, true, true)
 	} else if m.state == stateConfirm {
 		if m.confirmationOverlay == nil {
-			log.ErrorLog.Printf("confirmation overlay is nil")
+			log.ErrorLog.Printf("confirmation overlay is nil in stateConfirm — rendering default view")
+			return mainView
 		}
 		return overlay.PlaceOverlay(0, 0, m.confirmationOverlay.Render(), mainView, true, true)
 	}
 
-	// Render conductor overlays
+	// Render overlays
 	if m.orchestrationOverlay != nil && m.orchestrationOverlay.IsVisible() {
 		return overlay.PlaceOverlay(0, 0, m.orchestrationOverlay.Render(), mainView, true, true)
 	}

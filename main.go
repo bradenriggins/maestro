@@ -1,16 +1,6 @@
 package main
 
 import (
-	"claude-conductor/app"
-	cmd2 "claude-conductor/cmd"
-	"claude-conductor/config"
-	"claude-conductor/daemon"
-	"claude-conductor/log"
-	"claude-conductor/pkg/accounts"
-	"claude-conductor/pkg/orchestration"
-	"claude-conductor/session"
-	"claude-conductor/session/git"
-	"claude-conductor/session/tmux"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -19,6 +9,17 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"maestro/app"
+	cmd2 "maestro/cmd"
+	"maestro/config"
+	"maestro/daemon"
+	"maestro/log"
+	"maestro/pkg/accounts"
+	"maestro/pkg/orchestration"
+	"maestro/session"
+	"maestro/session/git"
+	"maestro/session/tmux"
 )
 
 var (
@@ -31,18 +32,22 @@ var (
 	taskFlag         string
 	statusFilterFlag string
 	linesFlag        int
-	rootCmd     = &cobra.Command{
-		Use:   "claude-conductor",
-		Short: "Claude Conductor - Multi-account Claude Code orchestration.",
+	scheduleFlag     bool
+	durationFlag     int
+	maxWaitFlag      int
+	rootCmd          = &cobra.Command{
+		Use:   "maestro",
+		Short: "Maestro - Multi-account Claude Code and Codex orchestration.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
-			log.Initialize(daemonFlag)
 			defer log.Close()
 
 			if daemonFlag {
 				cfg := config.LoadConfig()
 				err := daemon.RunDaemon(cfg)
-				log.ErrorLog.Printf("failed to start daemon %v", err)
+				if err != nil {
+					log.ErrorLog.Printf("failed to start daemon: %v", err)
+				}
 				return err
 			}
 
@@ -53,7 +58,7 @@ var (
 			}
 
 			if !git.IsGitRepo(currentDir) {
-				return fmt.Errorf("error: claude-conductor must be run from within a git repository")
+				return fmt.Errorf("error: maestro must be run from within a git repository")
 			}
 
 			cfg := config.LoadConfig()
@@ -87,8 +92,7 @@ var (
 	resetCmd = &cobra.Command{
 		Use:   "reset",
 		Short: "Reset all stored instances",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			log.Initialize(false)
+		RunE: func(c *cobra.Command, args []string) error {
 			defer log.Close()
 
 			state := config.LoadState()
@@ -96,28 +100,22 @@ var (
 			if err != nil {
 				return fmt.Errorf("failed to initialize storage: %w", err)
 			}
-			if err := storage.DeleteAllInstances(); err != nil {
-				return fmt.Errorf("failed to reset storage: %w", err)
-			}
-			fmt.Println("Storage has been reset successfully")
 
-			if err := tmux.CleanupSessions(cmd2.MakeExecutor()); err != nil {
-				return fmt.Errorf("failed to cleanup tmux sessions: %w", err)
-			}
-			fmt.Println("Tmux sessions have been cleaned up")
-
-			if err := git.CleanupWorktrees(); err != nil {
-				return fmt.Errorf("failed to cleanup worktrees: %w", err)
-			}
-			fmt.Println("Worktrees have been cleaned up")
-
-			// Kill any daemon that's running.
-			if err := daemon.StopDaemon(); err != nil {
-				return err
-			}
-			fmt.Println("daemon has been stopped")
-
-			return nil
+			return cmd2.RunReset(cmd2.ResetDeps{
+				LoadInstanceCount: func() int {
+					if instances, e := storage.LoadInstances(); e == nil {
+						return len(instances)
+					}
+					return -1
+				},
+				GetRepoPaths:       storage.GetRepoPaths,
+				DeleteAllInstances: storage.DeleteAllInstances,
+				CleanupSessions: func() error {
+					return tmux.CleanupSessions(cmd2.MakeExecutor())
+				},
+				CleanupWorktrees: git.CleanupWorktrees,
+				StopDaemon:       daemon.StopDaemon,
+			})
 		},
 	}
 
@@ -125,7 +123,6 @@ var (
 		Use:   "debug",
 		Short: "Print debug information like config paths",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			log.Initialize(false)
 			defer log.Close()
 
 			cfg := config.LoadConfig()
@@ -144,20 +141,37 @@ var (
 
 	versionCmd = &cobra.Command{
 		Use:   "version",
-		Short: "Print the version number of claude-conductor",
+		Short: "Print the version number of maestro",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("claude-conductor version %s\n", version)
+			fmt.Printf("maestro version %s\n", version)
 		},
 	}
 
 	setupCmd = &cobra.Command{
 		Use:   "setup",
-		Short: "Configure Anthropic accounts for multi-session orchestration",
+		Short: "Configure accounts for multi-session orchestration",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := accounts.RunSetup(); err != nil {
+			programBin, _ := cmd.Flags().GetString("program-bin")
+			if programBin == "" {
+				programBin, _ = cmd.Flags().GetString("claude-bin")
+			}
+			configFileFlag, _ := cmd.Flags().GetString("config-file")
+			if err := accounts.RunSetup(programBin, configFileFlag); err != nil {
 				return fmt.Errorf("setup failed: %w", err)
 			}
 			return nil
+		},
+	}
+
+	addAccountCmd = &cobra.Command{
+		Use:   "add-account",
+		Short: "Add a new account to an existing configuration",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			programBin, _ := cmd.Flags().GetString("program-bin")
+			if programBin == "" {
+				programBin, _ = cmd.Flags().GetString("claude-bin")
+			}
+			return accounts.RunAddAccount(programBin)
 		},
 	}
 
@@ -165,24 +179,23 @@ var (
 		Use:   "dispatch <instance-name> [task-prompt]",
 		Short: "Dispatch a task to a worker instance",
 		Args:  cobra.RangeArgs(1, 2),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(c *cobra.Command, args []string) error {
 			instanceName := args[0]
 			var taskPrompt string
 			if len(args) > 1 {
 				taskPrompt = args[1]
 			}
+			afterDeps, _ := c.Flags().GetStringSlice("after")
+			return cmd2.RunDispatchCmd(instanceName, taskPrompt, taskFlag, afterDeps, scheduleFlag, durationFlag, maxWaitFlag)
+		},
+	}
 
-			result, err := orchestration.RunDispatch(instanceName, taskPrompt, taskFlag)
-			if err != nil {
-				if de, ok := err.(*orchestration.DispatchError); ok {
-					fmt.Fprintf(os.Stderr, "Error: %s\n", de.Msg)
-					os.Exit(de.Code)
-				}
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
-			fmt.Println(result.TaskID)
-			return nil
+	pipelineCmd = &cobra.Command{
+		Use:   "pipeline <file.yaml>",
+		Short: "Execute a task pipeline from a YAML definition",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(c *cobra.Command, args []string) error {
+			return cmd2.RunPipeline(args[0])
 		},
 	}
 
@@ -191,6 +204,9 @@ var (
 		Short: "Show worker and task status",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if _, err := loadConductorConfig(); err != nil {
+				return err
+			}
 			var instanceFilter string
 			if len(args) > 0 {
 				instanceFilter = args[0]
@@ -203,6 +219,9 @@ var (
 		Use:   "workers",
 		Short: "List all registered workers",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if _, err := loadConductorConfig(); err != nil {
+				return err
+			}
 			return orchestration.RunWorkers()
 		},
 	}
@@ -211,6 +230,9 @@ var (
 		Use:   "tasks",
 		Short: "List all tasks",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if _, err := loadConductorConfig(); err != nil {
+				return err
+			}
 			return orchestration.RunTasks(statusFilterFlag)
 		},
 	}
@@ -220,6 +242,9 @@ var (
 		Short: "Capture recent terminal output from a worker",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if _, err := loadConductorConfig(); err != nil {
+				return err
+			}
 			return orchestration.RunOutput(args[0], linesFlag)
 		},
 	}
@@ -229,6 +254,9 @@ var (
 		Short: "Capture full terminal history from a worker and save to file",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if _, err := loadConductorConfig(); err != nil {
+				return err
+			}
 			return orchestration.RunRecall(args[0])
 		},
 	}
@@ -237,9 +265,9 @@ var (
 		Use:   "usage",
 		Short: "Show usage levels for all configured accounts",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := accounts.LoadConductorConfig()
-			if err != nil || cfg == nil {
-				return fmt.Errorf("no conductor config found — run setup first")
+			cfg, err := loadConductorConfig()
+			if err != nil {
+				return err
 			}
 			report, err := orchestration.CollectUsage(cfg)
 			if err != nil {
@@ -248,6 +276,8 @@ var (
 			orchestration.SaveUsageReport(report)
 			fmt.Println("Account Usage (5-hour rolling window):")
 			fmt.Print(orchestration.FormatUsageSummary(report))
+			advice := orchestration.GetRoutingAdvice(report)
+			fmt.Println(orchestration.FormatRoutingAdvice(advice))
 			return nil
 		},
 	}
@@ -255,77 +285,49 @@ var (
 	doctorCmd = &cobra.Command{
 		Use:   "doctor",
 		Short: "Diagnose and fix state issues",
+		RunE: func(c *cobra.Command, args []string) error {
+			return cmd2.RunDoctor()
+		},
+	}
+
+	retryFailedCmd = &cobra.Command{
+		Use:   "retry-failed",
+		Short: "Retry all failed and timed-out tasks across idle workers",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("Running diagnostics...")
+			if _, err := loadConductorConfig(); err != nil {
+				return err
+			}
 
-			// Check config
-			cfg, err := accounts.LoadConductorConfig()
+			maxTasks, _ := cmd.Flags().GetInt("max")
+			workerName, _ := cmd.Flags().GetString("worker")
+
+			result, err := orchestration.RunBulkRetry(orchestration.BulkRetryOptions{
+				MaxTasks:   maxTasks,
+				WorkerName: workerName,
+			})
 			if err != nil {
-				fmt.Printf("  ✗ Config: %v\n", err)
-			} else if cfg == nil {
-				fmt.Printf("  ✗ Config: not found (run setup first)\n")
-			} else {
-				fmt.Printf("  ✓ Config: %d accounts configured\n", len(cfg.Accounts))
+				return err
 			}
 
-			// Check account directories
-			if cfg != nil {
-				for _, acct := range cfg.Accounts {
-					if _, err := os.Stat(acct.ConfigDir); err != nil {
-						fmt.Printf("  ✗ Account %s: config dir missing (%s)\n", acct.Name, acct.ConfigDir)
-					} else {
-						fmt.Printf("  ✓ Account %s: config dir exists\n", acct.Name)
-					}
-				}
+			if result.Total == 0 {
+				fmt.Println("No failed or timed-out tasks to retry.")
+				return nil
 			}
 
-			// Check registry
-			reg, err := orchestration.LoadRegistry()
-			if err != nil {
-				fmt.Printf("  ✗ Registry: %v\n", err)
-			} else {
-				alive := 0
-				dead := 0
-				for _, entry := range reg.Instances {
-					if orchestration.TmuxHasSession(entry.TmuxSession) {
-						alive++
-					} else if entry.Status == orchestration.RegistryStatusRunning {
-						dead++
-					}
-				}
-				fmt.Printf("  ✓ Registry: %d instances (%d alive, %d dead)\n", len(reg.Instances), alive, dead)
+			fmt.Printf("Retried %d/%d failed tasks", result.Retried, result.Total)
+			if len(result.WorkersUsed) > 0 {
+				fmt.Printf(" across %d workers", len(result.WorkersUsed))
 			}
-
-			// Check task files
-			store, err := orchestration.NewTaskStore()
-			if err != nil {
-				fmt.Printf("  ✗ Task store: %v\n", err)
-			} else {
-				tasks, _ := store.List("")
-				stale := 0
-				for _, t := range tasks {
-					if t.Status == orchestration.StatusStale {
-						stale++
-					}
-				}
-				if stale > 0 {
-					fmt.Printf("  ✗ Tasks: %d total, %d stale\n", len(tasks), stale)
-				} else {
-					fmt.Printf("  ✓ Tasks: %d total\n", len(tasks))
+			fmt.Println(".")
+			if result.Skipped > 0 {
+				fmt.Printf("  %d skipped (max attempts reached).\n", result.Skipped)
+			}
+			if result.Failed > 0 {
+				fmt.Printf("  %d failed to dispatch:\n", result.Failed)
+				for _, e := range result.Errors {
+					fmt.Printf("    - %s\n", e)
 				}
 			}
-
-			// Check permissions
-			base, _ := accounts.ConductorDir()
-			if info, err := os.Stat(base); err == nil {
-				if info.Mode().Perm() != 0700 {
-					fmt.Printf("  ✗ Permissions: %s is %o (should be 0700)\n", base, info.Mode().Perm())
-				} else {
-					fmt.Printf("  ✓ Permissions: correct\n")
-				}
-			}
-
-			fmt.Println("\nDone.")
 			return nil
 		},
 	}
@@ -409,6 +411,13 @@ var (
 )
 
 func init() {
+	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		if err := log.Initialize(daemonFlag); err != nil {
+			return fmt.Errorf("failed to initialize logger: %w", err)
+		}
+		return nil
+	}
+
 	rootCmd.Flags().StringVarP(&programFlag, "program", "p", "",
 		"Program to run in new instances (e.g. 'aider --model ollama_chat/gemma3:1b')")
 	rootCmd.Flags().BoolVarP(&autoYesFlag, "autoyes", "y", false,
@@ -425,13 +434,27 @@ func init() {
 	}
 
 	dispatchCmd.Flags().StringVar(&taskFlag, "task", "", "Re-dispatch an existing task by ID")
+	dispatchCmd.Flags().BoolVar(&scheduleFlag, "schedule", false, "Enable throughput-optimal scheduling (waits for rate-limit resets if beneficial)")
+	dispatchCmd.Flags().IntVar(&durationFlag, "duration", 0, "Estimated task duration in minutes (used by scheduler)")
+	dispatchCmd.Flags().IntVar(&maxWaitFlag, "max-wait", 120, "Maximum wait time in minutes for a worker reset (used by scheduler)")
+	dispatchCmd.Flags().StringSlice("after", nil, "Task IDs that must complete before this task runs")
 	tasksCmd.Flags().StringVar(&statusFilterFlag, "status", "", "Filter tasks by status (e.g. dispatched, in_progress, completed, failed)")
 	outputCmd.Flags().IntVar(&linesFlag, "lines", 50, "Number of lines to capture (max 500)")
+
+	setupCmd.Flags().String("program-bin", "", "path to the AI program binary (claude, codex)")
+	setupCmd.Flags().String("claude-bin", "", "deprecated: use --program-bin")
+	_ = setupCmd.Flags().MarkHidden("claude-bin")
+	setupCmd.Flags().String("config-file", "", "path to JSON file pre-seeding account names and roles")
+
+	addAccountCmd.Flags().String("program-bin", "", "path to the AI program binary (claude, codex)")
+	addAccountCmd.Flags().String("claude-bin", "", "deprecated: use --program-bin")
+	_ = addAccountCmd.Flags().MarkHidden("claude-bin")
 
 	rootCmd.AddCommand(debugCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(resetCmd)
 	rootCmd.AddCommand(setupCmd)
+	rootCmd.AddCommand(addAccountCmd)
 	rootCmd.AddCommand(dispatchCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(workersCmd)
@@ -440,11 +463,26 @@ func init() {
 	rootCmd.AddCommand(recallCmd)
 	rootCmd.AddCommand(usageCmd)
 	rootCmd.AddCommand(doctorCmd)
+	retryFailedCmd.Flags().Int("max", 0, "maximum number of tasks to retry (0 = all)")
+	retryFailedCmd.Flags().String("worker", "", "force all retries to a specific worker")
+	rootCmd.AddCommand(retryFailedCmd)
 	rootCmd.AddCommand(cleanCmd)
+	rootCmd.AddCommand(pipelineCmd)
+}
+
+func loadConductorConfig() (*accounts.ConductorConfig, error) {
+	cfg, err := accounts.LoadConductorConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load conductor config: %w", err)
+	}
+	if cfg == nil {
+		return nil, fmt.Errorf("not configured; run 'maestro setup' first")
+	}
+	return cfg, nil
 }
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Println(err)
+		os.Exit(1)
 	}
 }

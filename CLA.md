@@ -1,6 +1,6 @@
 # Contributor License Agreement
 
-Thank you for your interest in contributing to [Claude Squad](https://github.com/smtg-ai/claude-squad) ("the Project"). This Contributor License Agreement ("CLA") ensures that your Contributions can be used in the Project while allowing you to retain ownership of your work.
+Thank you for your interest in contributing to [Maestro](https://github.com/bradenmweight/maestro) ("the Project"). This Contributor License Agreement ("CLA") ensures that your Contributions can be used in the Project while allowing you to retain ownership of your work.
 
 By signing this CLA, you accept and agree to the following terms for your present and future Contributions to the Project.
 
@@ -10,7 +10,7 @@ By signing this CLA, you accept and agree to the following terms for your presen
 
 **"Contribution"**: Any original work of authorship, including source code, documentation, configuration files, or other materials, that you intentionally submit to the Project.
 
-**"Project"**: [Claude Squad](https://github.com/smtg-ai/claude-squad).
+**"Project"**: [Maestro](https://github.com/bradenmweight/maestro).
 
 ## 1. Grant of Rights
 
@@ -40,12 +40,8 @@ You provide your Contributions "AS IS" without warranties of any kind. You are n
 
 ## 5. How to Sign
 
-You may accept this CLA through the CLA assistant bot when submitting your first pull request
+You may accept this CLA through the CLA assistant bot when submitting your first pull request.
 
 ## 6. Acceptance
 
 By submitting a Contribution to the Project, you agree to be bound by the terms of this CLA. You may indicate your agreement on your PR.
-
-<br />
-
-*Questions? Contact [mufeez.amjad@outlook.com](mailto:mufeez.amjad@outlook.com) or [jshrivastava03@gmail.com](mailto:jshrivastava03@gmail.com)*

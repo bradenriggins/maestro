@@ -1,9 +1,10 @@
 package config
 
 import (
-	"claude-conductor/log"
 	"encoding/json"
 	"fmt"
+	"maestro/log"
+	"maestro/pkg/programs"
 	"os"
 	"os/exec"
 	"os/user"
@@ -17,11 +18,25 @@ const (
 	defaultProgram = "claude"
 )
 
+// aliasRegex matches shell alias output like "claude: aliased to /path" or
+// "claude -> /path" or "claude=/path" and captures the target path.
+var aliasRegex = regexp.MustCompile(`(?:aliased to|->|=)\s*([^\s]+)`)
+
 // GetConfigDir returns the path to the application's configuration directory
 func GetConfigDir() (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("failed to get config home directory: %w", err)
+	}
+	return filepath.Join(homeDir, ".maestro"), nil
+}
+
+// getLegacyConfigDir returns the path to the legacy configuration directory
+// used before the rename from claude-conductor to maestro.
+func getLegacyConfigDir() (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
 	}
 	return filepath.Join(homeDir, ".claude-conductor"), nil
 }
@@ -48,12 +63,18 @@ type Config struct {
 
 // GetProgram returns the program to run. If Profiles is non-empty and
 // DefaultProgram matches a profile name, that profile's Program is returned.
-// Otherwise DefaultProgram is returned as-is.
+// Otherwise DefaultProgram is returned as-is. Falls back to "claude" if the
+// resolved program name is empty.
 func (c *Config) GetProgram() string {
 	for _, p := range c.Profiles {
 		if p.Name == c.DefaultProgram {
-			return p.Program
+			if p.Program != "" {
+				return p.Program
+			}
 		}
+	}
+	if c.DefaultProgram == "" {
+		return defaultProgram
 	}
 	return c.DefaultProgram
 }
@@ -104,27 +125,30 @@ func DefaultConfig() *Config {
 	}
 }
 
-// GetClaudeCommand attempts to find the "claude" command in the user's shell
-// It checks in the following order:
-// 1. Shell alias resolution: using "which" command
-// 2. PATH lookup
-//
-// If both fail, it returns an error.
-func GetClaudeCommand() (string, error) {
+// GetProgramCommand attempts to find the given program's binary in the user's
+// shell. It checks shell alias resolution (via "which") first, then falls back
+// to a direct PATH lookup. If both fail, it returns an error.
+func GetProgramCommand(programName string) (string, error) {
+	spec, ok := programs.Get(programName)
+	if !ok {
+		return "", fmt.Errorf("unknown program %q", programName)
+	}
+	binaryName := spec.Binary
+
 	shell := os.Getenv("SHELL")
-	if shell == "" {
-		shell = "/bin/bash" // Default to bash if SHELL is not set
+	if shell == "" || !filepath.IsAbs(shell) {
+		shell = "/bin/sh" // Default to /bin/sh if SHELL is not set or not an absolute path
 	}
 
 	// Force the shell to load the user's profile and then run the command
 	// For zsh, source .zshrc; for bash, source .bashrc
 	var shellCmd string
 	if strings.Contains(shell, "zsh") {
-		shellCmd = "source ~/.zshrc &>/dev/null || true; which claude"
+		shellCmd = fmt.Sprintf("source ~/.zshrc &>/dev/null || true; which %s", binaryName)
 	} else if strings.Contains(shell, "bash") {
-		shellCmd = "source ~/.bashrc &>/dev/null || true; which claude"
+		shellCmd = fmt.Sprintf("source ~/.bashrc &>/dev/null || true; which %s", binaryName)
 	} else {
-		shellCmd = "which claude"
+		shellCmd = fmt.Sprintf("which %s", binaryName)
 	}
 
 	cmd := exec.Command(shell, "-c", shellCmd)
@@ -134,7 +158,6 @@ func GetClaudeCommand() (string, error) {
 		if path != "" {
 			// Check if the output is an alias definition and extract the actual path
 			// Handle formats like "claude: aliased to /path/to/claude" or other shell-specific formats
-			aliasRegex := regexp.MustCompile(`(?:aliased to|->|=)\s*([^\s]+)`)
 			matches := aliasRegex.FindStringSubmatch(path)
 			if len(matches) > 1 {
 				path = matches[1]
@@ -144,12 +167,17 @@ func GetClaudeCommand() (string, error) {
 	}
 
 	// Otherwise, try to find in PATH directly
-	claudePath, err := exec.LookPath("claude")
+	binPath, err := exec.LookPath(binaryName)
 	if err == nil {
-		return claudePath, nil
+		return binPath, nil
 	}
 
-	return "", fmt.Errorf("claude command not found in aliases or PATH")
+	return "", fmt.Errorf("%s command not found in aliases or PATH", binaryName)
+}
+
+// GetClaudeCommand is deprecated -- use GetProgramCommand("claude").
+func GetClaudeCommand() (string, error) {
+	return GetProgramCommand("claude")
 }
 
 func LoadConfig() *Config {
@@ -163,6 +191,13 @@ func LoadConfig() *Config {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
+			// Check for legacy config at ~/.claude-conductor/
+			if legacyDir, legacyErr := getLegacyConfigDir(); legacyErr == nil {
+				legacyPath := filepath.Join(legacyDir, ConfigFileName)
+				if _, statErr := os.Stat(legacyPath); statErr == nil {
+					log.WarningLog.Printf("Found legacy config at %s — please migrate to %s", legacyDir, configDir)
+				}
+			}
 			// Create and save default config if file doesn't exist
 			defaultCfg := DefaultConfig()
 			if saveErr := saveConfig(defaultCfg); saveErr != nil {
@@ -191,7 +226,7 @@ func saveConfig(config *Config) error {
 		return fmt.Errorf("failed to get config directory: %w", err)
 	}
 
-	if err := os.MkdirAll(configDir, 0755); err != nil {
+	if err := os.MkdirAll(configDir, 0700); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
@@ -201,7 +236,11 @@ func saveConfig(config *Config) error {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	return os.WriteFile(configPath, data, 0644)
+	tmp := configPath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return fmt.Errorf("failed to write temp config file: %w", err)
+	}
+	return os.Rename(tmp, configPath)
 }
 
 // SaveConfig exports the saveConfig function for use by other packages

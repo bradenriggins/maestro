@@ -19,6 +19,8 @@ type Account struct {
 	Role      Role   `json:"role"`
 	ConfigDir string `json:"config_dir"`
 	Email     string `json:"email"`
+	Program   string `json:"program,omitempty"` // "claude" or "codex"; empty defaults to "claude"
+	Model     string `json:"model,omitempty"`   // e.g., "sonnet-4.6", "gpt-5.3-codex"; empty = auto-detect
 	Verified  bool   `json:"verified"`
 }
 
@@ -46,11 +48,12 @@ type ConductorConfig struct {
 var validNameRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
 func (c *ConductorConfig) Validate() error {
-	if len(c.Accounts) == 0 {
-		return fmt.Errorf("at least one account is required")
+	if len(c.Accounts) < 2 {
+		return fmt.Errorf("at least two accounts are required (one orchestrator and one worker)")
 	}
 	orchestratorCount := 0
 	names := make(map[string]bool)
+	configDirs := make(map[string]string)
 	for _, acct := range c.Accounts {
 		if !validNameRegex.MatchString(acct.Name) {
 			return fmt.Errorf("account name %q must match /^[a-z0-9][a-z0-9-]*$/", acct.Name)
@@ -59,12 +62,22 @@ func (c *ConductorConfig) Validate() error {
 			return fmt.Errorf("duplicate account name: %q", acct.Name)
 		}
 		names[acct.Name] = true
+		if acct.ConfigDir == "" {
+			return fmt.Errorf("account %q has empty config_dir", acct.Name)
+		}
+		if prev, exists := configDirs[acct.ConfigDir]; exists {
+			return fmt.Errorf("accounts %q and %q share the same config_dir %q", prev, acct.Name, acct.ConfigDir)
+		}
+		configDirs[acct.ConfigDir] = acct.Name
 		if acct.Role != RoleOrchestrator && acct.Role != RoleWorker {
 			return fmt.Errorf("account %q has invalid role %q (must be %q or %q)", acct.Name, acct.Role, RoleOrchestrator, RoleWorker)
 		}
 		if acct.Role == RoleOrchestrator {
 			orchestratorCount++
 		}
+	}
+	if orchestratorCount == 0 {
+		return fmt.Errorf("at least one account must have the %q role", RoleOrchestrator)
 	}
 	if orchestratorCount > 1 {
 		return fmt.Errorf("at most one account may have role %q, found %d", RoleOrchestrator, orchestratorCount)
@@ -104,6 +117,16 @@ func ConductorDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("failed to get home directory: %w", err)
+	}
+	return filepath.Join(home, ".maestro"), nil
+}
+
+// legacyConductorDir returns the path to the legacy conductor directory
+// used before the rename from claude-conductor to maestro.
+func legacyConductorDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
 	}
 	return filepath.Join(home, ".claude-conductor"), nil
 }

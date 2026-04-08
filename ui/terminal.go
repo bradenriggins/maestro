@@ -1,10 +1,10 @@
 package ui
 
 import (
-	"claude-conductor/log"
-	"claude-conductor/session"
-	"claude-conductor/session/tmux"
 	"fmt"
+	"maestro/log"
+	"maestro/session"
+	"maestro/session/tmux"
 	"os"
 	"strings"
 	"sync"
@@ -65,7 +65,7 @@ func (t *TerminalPane) SetSize(width, height int) {
 // Caller must hold t.mu.
 func (t *TerminalPane) setFallbackState(message string) {
 	t.fallback = true
-	t.fallbackText = lipgloss.JoinVertical(lipgloss.Center, FallBackText, "", message)
+	t.fallbackText = lipgloss.JoinVertical(lipgloss.Center, fallbackArt, "", message)
 	t.content = ""
 }
 

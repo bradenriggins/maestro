@@ -1,13 +1,13 @@
 package app
 
 import (
-	"claude-conductor/config"
-	"claude-conductor/log"
-	"claude-conductor/session"
-	"claude-conductor/ui"
-	"claude-conductor/ui/overlay"
 	"context"
 	"fmt"
+	"maestro/config"
+	"maestro/log"
+	"maestro/session"
+	"maestro/ui"
+	"maestro/ui/overlay"
 	"os"
 	"testing"
 

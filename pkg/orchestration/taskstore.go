@@ -6,12 +6,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"claude-conductor/pkg/accounts"
+	"maestro/pkg/accounts"
 )
 
 // TaskStore manages task files in a configurable base directory.
 type TaskStore struct {
-	tasksDir  string
+	tasksDir   string
 	resultsDir string
 	statusDir  string
 }
@@ -49,9 +49,16 @@ func (s *TaskStore) resultPath(id string) string {
 	return filepath.Join(s.resultsDir, id+".md")
 }
 
+// CreateOptions configures optional task creation parameters such as dependencies.
+type CreateOptions struct {
+	DependsOn  []string
+	PipelineID string
+}
+
 // Create writes a new task JSON file and its companion prompt file.
 // The prompt file has a header block followed by the prompt text.
-func (s *TaskStore) Create(id, prompt, workerInstance, workerAccount, statusFilePath, dispatchedBy string) (*Task, error) {
+// If opts is non-nil and DependsOn is set, the task starts as StatusPending instead of StatusDispatched.
+func (s *TaskStore) Create(id, prompt, workerInstance, workerAccount, statusFilePath, dispatchedBy string, opts *CreateOptions) (*Task, error) {
 	if err := os.MkdirAll(s.tasksDir, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create tasks dir: %w", err)
 	}
@@ -67,17 +74,45 @@ func (s *TaskStore) Create(id, prompt, workerInstance, workerAccount, statusFile
 	promptFile := s.promptPath(id)
 	resultFile := s.resultPath(id)
 
+	status := StatusDispatched
+	attempts := 1
+
+	var dependsOn []string
+	var pipelineID string
+	if opts != nil {
+		if len(opts.DependsOn) > 0 {
+			dependsOn = opts.DependsOn
+			status = StatusPending
+			attempts = 0
+		}
+		pipelineID = opts.PipelineID
+	}
+
+	// Only set DispatchedAt for tasks that are actually being dispatched.
+	// Pending tasks (with dependencies) haven't been dispatched yet; their
+	// DispatchedAt should be set when they are actually dispatched later,
+	// so that UpdateDurationStats computes the real execution duration
+	// rather than including the wait-for-dependencies period.
+	var dispatchedAt *string
+	if status == StatusDispatched {
+		ts := now
+		dispatchedAt = &ts
+	}
+
 	task := &Task{
 		ID:             id,
-		Status:         StatusDispatched,
+		Status:         status,
 		WorkerInstance: workerInstance,
 		WorkerAccount:  workerAccount,
 		PromptFile:     promptFile,
 		ResultFile:     resultFile,
 		CreatedAt:      now,
 		UpdatedAt:      now,
-		Attempts:       1,
+		DispatchedAt:   dispatchedAt,
+		Attempts:       attempts,
 		DispatchedBy:   dispatchedBy,
+		DependsOn:      dependsOn,
+		PipelineID:     pipelineID,
 	}
 
 	if err := AtomicWriteJSON(taskFile, task); err != nil {
@@ -86,7 +121,9 @@ func (s *TaskStore) Create(id, prompt, workerInstance, workerAccount, statusFile
 
 	header := fmt.Sprintf("Task ID: %s\nTask File: %s\nResult File: %s\nStatus File: %s\n\n---\n\n%s",
 		id, taskFile, resultFile, statusFilePath, prompt)
-	if err := os.WriteFile(promptFile, []byte(header), 0600); err != nil {
+	if err := AtomicWritePrompt(promptFile, []byte(header)); err != nil {
+		// Roll back the already-written task JSON to avoid an orphaned task record.
+		os.Remove(taskFile)
 		return nil, fmt.Errorf("failed to write prompt file: %w", err)
 	}
 

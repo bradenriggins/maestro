@@ -1,162 +1,184 @@
-# Claude Squad [![CI](https://github.com/smtg-ai/claude-squad/actions/workflows/build.yml/badge.svg)](https://github.com/smtg-ai/claude-squad/actions/workflows/build.yml) [![GitHub Release](https://img.shields.io/github/v/release/smtg-ai/claude-squad)](https://github.com/smtg-ai/claude-squad/releases/latest)
+# Maestro
 
-[Claude Squad](https://smtg-ai.github.io/claude-squad/) is a terminal app that manages multiple [Claude Code](https://github.com/anthropics/claude-code), [Codex](https://github.com/openai/codex), [Gemini](https://github.com/google-gemini/gemini-cli) (and other local agents including [Aider](https://github.com/Aider-AI/aider)) in separate workspaces, allowing you to work on multiple tasks simultaneously.
+Maestro is a Go TUI that orchestrates multiple Claude Code and Codex CLI instances across separate accounts — with usage-aware routing that reads real-time rate limit data and dispatches each task to the account with the most headroom.
 
+![Maestro TUI](assets/screenshot.png)
 
-![Claude Squad Screenshot](assets/screenshot.png)
+## Features
 
-### Highlights
-- Complete tasks in the background (including yolo / auto-accept mode!)
-- Manage instances and tasks in one terminal window
-- Review changes before applying them, checkout changes before pushing them
-- Each task gets its own isolated git workspace, so no conflicts
+- **Multi-account credential isolation** — each account runs in its own `CLAUDE_CONFIG_DIR` or `CODEX_HOME`, injected per tmux session so credentials never bleed across workers
+- **Usage tracking and routing** — reads Claude Code `statusLine` data and Codex session JSONL files to track each account's 5-hour rolling usage, then routes tasks to the account with the most capacity
+- **Model-aware dispatch** — uses the program-specific model defaults and available model families defined in code, then picks the right worker for each task type
+- **Claude Code and Codex side by side** — both programs can be orchestrator or worker; mix and match freely
+- **tmux session isolation** — each worker lives in a dedicated tmux session (`maestro_<name>`), so you can attach, inspect, and detach at any time
+- **Git worktree isolation** — each worker gets its own branch and worktree, keeping in-progress changes separate
+- **File-based IPC** — tasks, results, and worker status live in `~/.maestro/` as plain JSON files; no external services required
+- **TUI dashboard** — BubbleTea interface shows all workers, tasks, diffs, and logs in one view
 
-<br />
+## How It Works
 
-https://github.com/user-attachments/assets/aef18253-e58f-4525-9032-f5a3d66c975a
+```
+~/.maestro/
+  config.json          <- Account definitions (name, program, role, config dir)
+  registry.json        <- Live instance -> tmux session mapping
+  accounts/{name}/     <- Per-account CLAUDE_CONFIG_DIR or CODEX_HOME
+  tasks/*.json         <- Task dispatch files (IPC)
+  status/*.json        <- Worker status files (idle / busy)
+  results/*.md         <- Task output written by workers
+  usage/*.json         <- Real-time usage from statusLine / JSONL
+```
 
-<br />
+**Task dispatch:** `maestro dispatch <worker> "<prompt>"` writes a task file and sends a tmux instruction to the worker. The worker's instructions file (`CLAUDE.md` for Claude Code or `AGENTS.md` for Codex) tells it to read the file, acknowledge within 30 seconds, execute the task, write a result file, and set its status back to idle.
 
-### Installation
+**Usage tracking:** During setup, each Claude Code account's `settings.json` gets a `statusLine` command that pipes rate limit data (five-hour and seven-day usage percentages) to a receiver script, which writes to `~/.maestro/usage/<account>.json`. Codex usage is tracked from session JSONL files.
 
-Both Homebrew and manual installation will install Claude Squad as `cs` on your system.
+**Routing:** `maestro dispatch` (and the quick-dispatch palette in the TUI) call `CollectUsage`, rank accounts by available headroom, and select the best idle worker automatically.
 
-#### Homebrew
+**Reconciliation:** The TUI reconciles state every 5 seconds — it checks that tmux sessions are alive, transitions stale in-progress tasks to failed if the worker is dead, and corrects status files when they diverge from actual task state.
+
+## Prerequisites
+
+- [tmux](https://github.com/tmux/tmux)
+- [gh](https://cli.github.com) (GitHub CLI — used for branch push / PR creation)
+- [jq](https://jqlang.github.io/jq/)
+- [Claude Code](https://claude.ai/download) and/or [Codex CLI](https://github.com/openai/codex)
+
+Maestro must be run from within a git repository.
+
+## Installation
+
+Prerequisites for local builds:
+
+- Go 1.23+ (toolchain pinned to 1.24.1)
+- tmux
+- gh
+- jq
+
+**curl | bash (recommended):**
 
 ```bash
-brew install claude-squad
-ln -s "$(brew --prefix)/bin/claude-squad" "$(brew --prefix)/bin/cs"
+curl -fsSL https://raw.githubusercontent.com/bradenmweight/maestro/main/install.sh | bash
 ```
 
-#### Manual
+The installer detects your platform and architecture, downloads the correct binary, and adds it to `~/.local/bin`.
 
-Claude Squad can also be installed by running the following command:
+**Build from source:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/smtg-ai/claude-squad/main/install.sh | bash
+git clone https://github.com/bradenmweight/maestro.git
+cd maestro
+go build -o maestro ./
+sudo mv maestro /usr/local/bin/
 ```
 
-This puts the `cs` binary in `~/.local/bin`.
+## Setup
 
-To use a custom name for the binary:
+Run the interactive setup wizard once per machine:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/smtg-ai/claude-squad/main/install.sh | bash -s -- --name <your-binary-name>
+maestro setup
 ```
 
-### Prerequisites
+This walks you through adding one or more accounts, logging into Claude Code or Codex under each account's isolated config directory, and configuring roles (orchestrator / worker). Account config is written to `~/.maestro/config.json`.
 
-- [tmux](https://github.com/tmux/tmux/wiki/Installing)
-- [gh](https://cli.github.com/)
-
-### Usage
-
-```
-Usage:
-  cs [flags]
-  cs [command]
-
-Available Commands:
-  completion  Generate the autocompletion script for the specified shell
-  debug       Print debug information like config paths
-  help        Help about any command
-  reset       Reset all stored instances
-  version     Print the version number of claude-squad
-
-Flags:
-  -y, --autoyes          [experimental] If enabled, all instances will automatically accept prompts for claude code & aider
-  -h, --help             help for claude-squad
-  -p, --program string   Program to run in new instances (e.g. 'aider --model ollama_chat/gemma3:1b')
-```
-
-Run the application with:
+To add more accounts later:
 
 ```bash
-cs
-```
-NOTE: The default program is `claude` and we recommend using the latest version.
-
-<br />
-
-<b>Using Claude Squad with other AI assistants:</b>
-- For [Codex](https://github.com/openai/codex): Set your API key with `export OPENAI_API_KEY=<your_key>`
-- Launch with specific assistants:
-   - Codex: `cs -p "codex"`
-   - Aider: `cs -p "aider ..."`
-   - Gemini: `cs -p "gemini"`
-- Make this the default, by modifying the config file (locate with `cs debug`)
-
-<br />
-
-#### Menu
-The menu at the bottom of the screen shows available commands: 
-
-##### Instance/Session Management
-- `n` - Create a new session
-- `N` - Create a new session with a prompt
-- `D` - Kill (delete) the selected session
-- `↑/j`, `↓/k` - Navigate between sessions
-
-##### Actions
-- `↵/o` - Attach to the selected session to reprompt
-- `ctrl-q` - Detach from session
-- `s` - Commit and push branch to github
-- `c` - Checkout. Commits changes and pauses the session
-- `r` - Resume a paused session
-- `?` - Show help menu
-
-##### Navigation
-- `tab` - Switch between preview tab and diff tab
-- `q` - Quit the application
-- `shift-↓/↑` - scroll in diff view
-
-### Configuration
-
-Claude Squad stores its configuration in `~/.claude-squad/config.json`. You can find the exact path by running `cs debug`.
-
-#### Profiles
-
-Profiles let you define multiple named program configurations and switch between them when creating a new session. When more than one profile is defined, the session creation overlay shows a profile picker that you can navigate with `←`/`→`.
-
-To configure profiles, add a `profiles` array to your config file and set `default_program` to the name of the profile to select by default:
-
-```json
-{
-  "default_program": "claude",
-  "profiles": [
-    { "name": "claude", "program": "claude" },
-    { "name": "codex", "program": "codex" },
-    { "name": "aider", "program": "aider --model ollama_chat/gemma3:1b" }
-  ]
-}
+maestro add-account
 ```
 
-Each profile has two fields:
+## CLI Reference
 
-| Field     | Description                                              |
-|-----------|----------------------------------------------------------|
-| `name`    | Display name shown in the profile picker                 |
-| `program` | Shell command used to launch the agent for that profile  |
+| Command | Description |
+|---------|-------------|
+| `maestro` | Open the TUI dashboard (must be run from a git repo) |
+| `maestro setup` | Interactive wizard to configure accounts |
+| `maestro add-account` | Add a new account to an existing configuration |
+| `maestro dispatch <worker> [prompt]` | Dispatch a task to a named worker instance |
+| `maestro workers` | List all registered workers and their status |
+| `maestro status [worker]` | Show worker and task status (optionally filtered to one worker) |
+| `maestro usage` | Show 5-hour rolling usage levels for all configured accounts |
+| `maestro tasks [--status <filter>]` | List all tasks, optionally filtered by status |
+| `maestro output <worker> [--lines N]` | Capture recent terminal output from a worker (default 50 lines) |
+| `maestro recall <worker>` | Save the full terminal scrollback from a worker to a file |
+| `maestro retry-failed [--max N] [--worker name]` | Retry all failed and timed-out tasks across idle workers |
+| `maestro doctor` | Diagnose state issues (config, registry, tasks, binaries, permissions) |
+| `maestro pipeline <file.yaml>` | Execute a task pipeline from a YAML definition |
+| `maestro clean` | Archive completed/failed tasks and remove capture files |
+| `maestro reset` | Destroy all instances, tasks, registry, and tmux sessions |
+| `maestro debug` | Print config path and parsed config JSON |
+| `maestro version` | Print the version number |
 
-If no profiles are defined, Claude Squad uses `default_program` directly as the launch command (the default is `claude`).
+### dispatch flags
 
-### FAQs
+```
+--task <id>         Re-dispatch an existing task by ID instead of creating a new one
+--after <id,...>    Task IDs that must complete before this task runs
+--schedule          Enable throughput-optimal scheduling (waits for rate-limit resets if beneficial)
+--duration <min>    Estimated task duration in minutes (used by scheduler)
+--max-wait <min>    Maximum wait time in minutes for a worker reset (default: 120)
+```
 
-#### Failed to start new session
+### tasks flags
 
-If you get an error like `failed to start new session: timed out waiting for tmux session`, update the
-underlying program (ex. `claude`) to the latest version.
+```
+--status <filter>    Filter by status: dispatched, in_progress, completed, failed
+```
 
-### How It Works
+### retry-failed flags
 
-1. **tmux** to create isolated terminal sessions for each agent
-2. **git worktrees** to isolate codebases so each session works on its own branch
-3. A simple TUI interface for easy navigation and management
+```
+--max <n>        Maximum number of tasks to retry (default: all)
+--worker <name>  Force all retries to a specific worker
+```
 
-### License
+## TUI Key Reference
 
-[AGPL-3.0](LICENSE.md)
+### Managing sessions
 
-### Star History
+| Key | Action |
+|-----|--------|
+| `n` | Create a new session (account picker) |
+| `N` | Create a new session with a prompt |
+| `x` | Kill (delete) the selected session |
+| `up` / `j`, `down` / `k` | Navigate between sessions |
+| `Enter` | Attach to the selected session |
+| `Ctrl-Q` | Detach from the current session |
 
-[![Star History Chart](https://api.star-history.com/svg?repos=smtg-ai/claude-squad&type=Date)](https://www.star-history.com/#smtg-ai/claude-squad&Date)
+### Handoff
+
+| Key | Action |
+|-----|--------|
+| `p` | Pause: commit changes and pause session |
+| `P` | Commit and push branch to GitHub |
+| `r` | Resume a paused session |
+
+### Orchestration
+
+| Key | Action |
+|-----|--------|
+| `o` | Orchestration overlay (workers, tasks, usage) |
+| `/` | Quick-dispatch palette |
+| `d` | Show diff tab |
+| `l` | Log viewer |
+| `h` | Task history |
+| `f` | Toggle preview mode |
+
+### Other
+
+| Key | Action |
+|-----|--------|
+| `Tab` | Switch between preview, diff, and terminal tabs |
+| `Shift-down` / `Shift-up` | Scroll in preview / diff / terminal view |
+| `?` | Help |
+| `q` | Quit (saves session state for resume) |
+
+## Attribution
+
+Maestro is based on [Claude Squad](https://github.com/smtg-ai/claude-squad) by smtg-ai and is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0). Substantial modifications have been made, including multi-account credential management, usage tracking and routing, model-aware task dispatch, and Codex CLI integration.
+
+See [NOTICE](NOTICE) for full attribution details.
+
+## License
+
+GNU Affero General Public License v3.0. See [LICENSE.md](LICENSE.md) for the full text.

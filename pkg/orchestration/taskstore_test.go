@@ -21,7 +21,7 @@ func TestTaskStore_CreateAndGet(t *testing.T) {
 	id, err := GenerateTaskID()
 	require.NoError(t, err)
 	statusPath := s.StatusFilePath("worker-1")
-	task, err := s.Create(id, "do the thing", "worker-1", "acct-a", statusPath, "orchestrator")
+	task, err := s.Create(id, "do the thing", "worker-1", "acct-a", statusPath, "orchestrator", nil)
 	require.NoError(t, err)
 	require.NotNil(t, task)
 
@@ -58,7 +58,7 @@ func TestTaskStore_Update(t *testing.T) {
 
 	id, err := GenerateTaskID()
 	require.NoError(t, err)
-	task, err := s.Create(id, "update me", "worker-1", "acct-a", s.StatusFilePath("worker-1"), "orch")
+	task, err := s.Create(id, "update me", "worker-1", "acct-a", s.StatusFilePath("worker-1"), "orch", nil)
 	require.NoError(t, err)
 
 	originalUpdatedAt := task.UpdatedAt
@@ -90,7 +90,7 @@ func TestTaskStore_List(t *testing.T) {
 	require.NoError(t, err)
 	ids := []string{id1, id2, id3}
 	for _, id := range ids {
-		_, err := s.Create(id, "task "+id, "worker-1", "acct-a", s.StatusFilePath("worker-1"), "orch")
+		_, err := s.Create(id, "task "+id, "worker-1", "acct-a", s.StatusFilePath("worker-1"), "orch", nil)
 		require.NoError(t, err)
 	}
 
@@ -137,13 +137,13 @@ func TestTaskStore_ForInstance(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		tid, tidErr := GenerateTaskID()
 		require.NoError(t, tidErr)
-		_, err := s.Create(tid, "prompt", "worker-1", "acct-a", s.StatusFilePath("worker-1"), "orch")
+		_, err := s.Create(tid, "prompt", "worker-1", "acct-a", s.StatusFilePath("worker-1"), "orch", nil)
 		require.NoError(t, err)
 	}
 	for i := 0; i < 3; i++ {
 		tid, tidErr := GenerateTaskID()
 		require.NoError(t, tidErr)
-		_, err := s.Create(tid, "prompt", "worker-2", "acct-b", s.StatusFilePath("worker-2"), "orch")
+		_, err := s.Create(tid, "prompt", "worker-2", "acct-b", s.StatusFilePath("worker-2"), "orch", nil)
 		require.NoError(t, err)
 	}
 

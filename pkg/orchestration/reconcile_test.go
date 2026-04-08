@@ -6,9 +6,18 @@ import (
 	"testing"
 	"time"
 
+	"maestro/log"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestMain initializes the logger so log.WarningLog is non-nil during tests.
+func TestMain(m *testing.M) {
+	log.Initialize(false)
+	defer log.Close()
+	os.Exit(m.Run())
+}
 
 type mockTmux struct {
 	alive map[string]bool
@@ -41,7 +50,7 @@ func TestReconcile_DetectsDeadSession(t *testing.T) {
 		"worker-1": {
 			Account:     "alice",
 			Role:        "worker",
-			TmuxSession: "claudeconductor_worker-1",
+			TmuxSession: "maestro_worker-1",
 			Status:      "running",
 			CreatedAt:   NowISO(),
 		},
@@ -50,13 +59,13 @@ func TestReconcile_DetectsDeadSession(t *testing.T) {
 	// Create an in_progress task for worker-1
 	id, err := GenerateTaskID()
 	require.NoError(t, err)
-	task, err := store.Create(id, "do work", "worker-1", "alice", store.StatusFilePath("worker-1"), "orch")
+	task, err := store.Create(id, "do work", "worker-1", "alice", store.StatusFilePath("worker-1"), "orch", nil)
 	require.NoError(t, err)
 	task.Status = StatusInProgress
 	require.NoError(t, store.Update(task))
 
 	tmux := &mockTmux{alive: map[string]bool{
-		"claudeconductor_worker-1": false, // session is dead
+		"maestro_worker-1": false, // session is dead
 	}}
 
 	result, reg, err := Reconcile(tmux, regPath, store)
@@ -93,7 +102,7 @@ func TestReconcile_CorrectsStaleStatusFile(t *testing.T) {
 		"worker-1": {
 			Account:     "alice",
 			Role:        "worker",
-			TmuxSession: "claudeconductor_worker-1",
+			TmuxSession: "maestro_worker-1",
 			Status:      "running",
 			CreatedAt:   NowISO(),
 		},
@@ -102,7 +111,7 @@ func TestReconcile_CorrectsStaleStatusFile(t *testing.T) {
 	// Create a completed task for worker-1
 	id, err := GenerateTaskID()
 	require.NoError(t, err)
-	task, err := store.Create(id, "finished work", "worker-1", "alice", store.StatusFilePath("worker-1"), "orch")
+	task, err := store.Create(id, "finished work", "worker-1", "alice", store.StatusFilePath("worker-1"), "orch", nil)
 	require.NoError(t, err)
 	task.Status = StatusCompleted
 	require.NoError(t, store.Update(task))
@@ -117,7 +126,7 @@ func TestReconcile_CorrectsStaleStatusFile(t *testing.T) {
 	require.NoError(t, AtomicWriteJSON(store.StatusFilePath("worker-1"), ws))
 
 	tmux := &mockTmux{alive: map[string]bool{
-		"claudeconductor_worker-1": true, // session is alive
+		"maestro_worker-1": true, // session is alive
 	}}
 
 	result, _, err := Reconcile(tmux, regPath, store)
@@ -142,7 +151,7 @@ func TestReconcile_PromotesStaleTasks(t *testing.T) {
 		"worker-1": {
 			Account:     "alice",
 			Role:        "worker",
-			TmuxSession: "claudeconductor_worker-1",
+			TmuxSession: "maestro_worker-1",
 			Status:      "running",
 			CreatedAt:   NowISO(),
 		},
@@ -151,7 +160,7 @@ func TestReconcile_PromotesStaleTasks(t *testing.T) {
 	// Create a task and manually set it to stale with an old timestamp
 	id, err := GenerateTaskID()
 	require.NoError(t, err)
-	task, err := store.Create(id, "stale work", "worker-1", "alice", store.StatusFilePath("worker-1"), "orch")
+	task, err := store.Create(id, "stale work", "worker-1", "alice", store.StatusFilePath("worker-1"), "orch", nil)
 	require.NoError(t, err)
 
 	// Set status to stale with an UpdatedAt more than 30 seconds in the past
@@ -160,7 +169,7 @@ func TestReconcile_PromotesStaleTasks(t *testing.T) {
 	require.NoError(t, AtomicWriteJSON(store.taskPath(id), task))
 
 	tmux := &mockTmux{alive: map[string]bool{
-		"claudeconductor_worker-1": true,
+		"maestro_worker-1": true,
 	}}
 
 	result, _, err := Reconcile(tmux, regPath, store)
@@ -184,7 +193,7 @@ func TestReconcile_LeavesHealthyInstancesAlone(t *testing.T) {
 		"worker-1": {
 			Account:     "alice",
 			Role:        "worker",
-			TmuxSession: "claudeconductor_worker-1",
+			TmuxSession: "maestro_worker-1",
 			Status:      "running",
 			CreatedAt:   NowISO(),
 		},
@@ -193,13 +202,13 @@ func TestReconcile_LeavesHealthyInstancesAlone(t *testing.T) {
 	// Create a currently in_progress task (recently updated)
 	id, err := GenerateTaskID()
 	require.NoError(t, err)
-	task, err := store.Create(id, "ongoing work", "worker-1", "alice", store.StatusFilePath("worker-1"), "orch")
+	task, err := store.Create(id, "ongoing work", "worker-1", "alice", store.StatusFilePath("worker-1"), "orch", nil)
 	require.NoError(t, err)
 	task.Status = StatusInProgress
 	require.NoError(t, store.Update(task))
 
 	tmux := &mockTmux{alive: map[string]bool{
-		"claudeconductor_worker-1": true, // session is alive
+		"maestro_worker-1": true, // session is alive
 	}}
 
 	result, reg, err := Reconcile(tmux, regPath, store)
@@ -219,6 +228,83 @@ func TestReconcile_LeavesHealthyInstancesAlone(t *testing.T) {
 	// Registry entry status unchanged in returned registry
 	require.NotNil(t, reg)
 	assert.Equal(t, "running", reg.Instances["worker-1"].Status)
+}
+
+// TestReconcile_DetectsPausedDeadSession verifies that when a registry entry has
+// status "paused" but tmux reports the session as dead, the entry becomes "dead"
+// and any in_progress tasks become stale.
+func TestReconcile_DetectsPausedDeadSession(t *testing.T) {
+	dir := t.TempDir()
+	store := NewTaskStoreWithDir(dir)
+
+	regPath := makeReconcileRegistry(t, dir, map[string]RegistryEntry{
+		"worker-2": {
+			Account:     "bob",
+			Role:        "worker",
+			TmuxSession: "maestro_worker-2",
+			Status:      RegistryStatusPaused,
+			CreatedAt:   NowISO(),
+		},
+	})
+
+	id, err := GenerateTaskID()
+	require.NoError(t, err)
+	task, err := store.Create(id, "paused work", "worker-2", "bob", store.StatusFilePath("worker-2"), "orch", nil)
+	require.NoError(t, err)
+	task.Status = StatusInProgress
+	require.NoError(t, store.Update(task))
+
+	tmux := &mockTmux{alive: map[string]bool{
+		"maestro_worker-2": false, // session is dead while paused
+	}}
+
+	result, reg, err := Reconcile(tmux, regPath, store)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	assert.Contains(t, result.DeadSessions, "worker-2")
+
+	require.NotNil(t, reg)
+	entry := reg.Instances["worker-2"]
+	assert.Equal(t, RegistryStatusDead, entry.Status)
+	assert.NotNil(t, entry.DiedAt)
+
+	assert.Contains(t, result.StaleTasks, id)
+	updated, err := store.Get(id)
+	require.NoError(t, err)
+	assert.Equal(t, StatusStale, updated.Status)
+}
+
+// TestReconcile_DetectsStartingDeadSession verifies that when a registry entry has
+// status "starting" but tmux reports the session as dead, the entry becomes "dead".
+func TestReconcile_DetectsStartingDeadSession(t *testing.T) {
+	dir := t.TempDir()
+	store := NewTaskStoreWithDir(dir)
+
+	regPath := makeReconcileRegistry(t, dir, map[string]RegistryEntry{
+		"worker-3": {
+			Account:     "carol",
+			Role:        "worker",
+			TmuxSession: "maestro_worker-3",
+			Status:      RegistryStatusStarting,
+			CreatedAt:   NowISO(),
+		},
+	})
+
+	tmux := &mockTmux{alive: map[string]bool{
+		"maestro_worker-3": false, // session died while starting
+	}}
+
+	result, reg, err := Reconcile(tmux, regPath, store)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	assert.Contains(t, result.DeadSessions, "worker-3")
+
+	require.NotNil(t, reg)
+	entry := reg.Instances["worker-3"]
+	assert.Equal(t, RegistryStatusDead, entry.Status)
+	assert.NotNil(t, entry.DiedAt)
 }
 
 // TestReconcile_HandlesEmptyRegistry verifies that an empty registry produces no

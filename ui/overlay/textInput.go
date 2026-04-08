@@ -1,7 +1,7 @@
 package overlay
 
 import (
-	"claude-conductor/config"
+	"maestro/config"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -99,11 +99,17 @@ func (t *TextInputOverlay) SetSize(width, height int) {
 	t.textarea.SetHeight(height)
 	t.width = width
 	t.height = height
+	// Set textarea width here (not in Render) to avoid state mutation during View.
+	innerWidth := width - 6 // accounting for padding and borders
+	if innerWidth < 1 {
+		innerWidth = 1
+	}
+	t.textarea.SetWidth(innerWidth)
 	if t.branchPicker != nil {
-		t.branchPicker.SetWidth(width - 6)
+		t.branchPicker.SetWidth(innerWidth)
 	}
 	if t.profilePicker != nil {
-		t.profilePicker.SetWidth(width - 6)
+		t.profilePicker.SetWidth(innerWidth)
 	}
 }
 
@@ -302,40 +308,43 @@ func (t *TextInputOverlay) Render() string {
 		innerWidth = 1
 	}
 
-	// Set textarea width to fit within the overlay
-	t.textarea.SetWidth(innerWidth)
-
 	// Build a horizontal divider line
 	divider := tiDividerStyle.Render(strings.Repeat("─", innerWidth))
 
-	// Build the view
-	var content string
+	// Build the view using strings.Builder to avoid repeated string concatenation.
+	var b strings.Builder
 
 	// Render profile picker if present, above the prompt
 	if t.profilePicker != nil {
-		content += t.profilePicker.Render() + "\n\n"
-		content += divider + "\n\n"
+		b.WriteString(t.profilePicker.Render())
+		b.WriteString("\n\n")
+		b.WriteString(divider)
+		b.WriteString("\n\n")
 	}
 
-	content += tiTitleStyle.Render(t.Title) + "\n"
-	content += t.textarea.View() + "\n\n"
+	b.WriteString(tiTitleStyle.Render(t.Title))
+	b.WriteString("\n")
+	b.WriteString(t.textarea.View())
+	b.WriteString("\n\n")
 
 	// Render branch picker if present, with dividers
 	if t.branchPicker != nil {
-		content += divider + "\n\n"
-		content += t.branchPicker.Render() + "\n\n"
+		b.WriteString(divider)
+		b.WriteString("\n\n")
+		b.WriteString(t.branchPicker.Render())
+		b.WriteString("\n\n")
 	}
 
-	content += divider + "\n\n"
+	b.WriteString(divider)
+	b.WriteString("\n\n")
 
 	// Render enter button with appropriate style
 	enterButton := " Enter "
 	if t.isEnterButton() {
-		enterButton = tiFocusedButtonStyle.Render(enterButton)
+		b.WriteString(tiFocusedButtonStyle.Render(enterButton))
 	} else {
-		enterButton = tiButtonStyle.Render(enterButton)
+		b.WriteString(tiButtonStyle.Render(enterButton))
 	}
-	content += enterButton
 
-	return tiStyle.Render(content)
+	return tiStyle.Render(b.String())
 }

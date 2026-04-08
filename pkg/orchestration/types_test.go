@@ -19,6 +19,8 @@ func TestTask_IsTerminal(t *testing.T) {
 		{StatusFailed, true},
 		{StatusTimedOut, true},
 		{StatusStale, false},
+		{StatusPending, false},
+		{StatusBlocked, false},
 	}
 	for _, tt := range tests {
 		task := Task{Status: tt.status}

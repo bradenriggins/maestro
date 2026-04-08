@@ -1,24 +1,29 @@
 package git
 
 import (
-	"claude-conductor/log"
 	"fmt"
+	"maestro/log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Setup creates a new worktree for the session
 func (g *GitWorktree) Setup() error {
+	if g.worktreePath == "" {
+		return fmt.Errorf("worktree path is empty for session %q", g.sessionName)
+	}
+
 	// Ensure worktrees directory exists early (can be done in parallel with branch check)
 	worktreesDir, err := getWorktreeDirectory()
 	if err != nil {
 		return fmt.Errorf("failed to get worktree directory: %w", err)
 	}
 
-	if err := os.MkdirAll(worktreesDir, 0755); err != nil {
-		return err
+	if err := os.MkdirAll(worktreesDir, 0700); err != nil {
+		return fmt.Errorf("failed to create worktree directory %s: %w", worktreesDir, err)
 	}
 
 	// If this worktree uses a pre-existing branch, always set up from that branch
@@ -70,8 +75,20 @@ func (g *GitWorktree) setupNewWorktree() error {
 	// Clean up any existing worktree first
 	_, _ = g.runGitCommand(g.repoPath, "worktree", "remove", "-f", g.worktreePath) // Ignore error if worktree doesn't exist
 
-	// Clean up any existing branch using git CLI (much faster than go-git PlainOpen)
-	_, _ = g.runGitCommand(g.repoPath, "branch", "-D", g.branchName) // Ignore error if branch doesn't exist
+	// Safely clean up any existing branch reference.
+	// Check if the branch exists before attempting deletion.
+	listOutput, listErr := g.runGitCommand(g.repoPath, "branch", "--list", g.branchName)
+	if listErr == nil && strings.TrimSpace(listOutput) != "" {
+		// Branch exists — check if it is fully merged into HEAD before deleting.
+		mergedOutput, mergedErr := g.runGitCommand(g.repoPath, "branch", "--merged", "HEAD", "--list", g.branchName)
+		if mergedErr == nil && strings.TrimSpace(mergedOutput) != "" {
+			// Branch is fully merged — safe to delete.
+			_, _ = g.runGitCommand(g.repoPath, "branch", "-d", g.branchName)
+		} else {
+			// Branch has unmerged commits — generate a unique name to avoid data loss.
+			g.branchName = fmt.Sprintf("%s-%x", g.branchName, time.Now().UnixNano())
+		}
+	}
 
 	output, err := g.runGitCommand(g.repoPath, "rev-parse", "HEAD")
 	if err != nil {
@@ -85,10 +102,8 @@ func (g *GitWorktree) setupNewWorktree() error {
 	headCommit := strings.TrimSpace(string(output))
 	g.baseCommitSHA = headCommit
 
-	// Create a new worktree from the HEAD commit
-	// Otherwise, we'll inherit uncommitted changes from the previous worktree.
-	// This way, we can start the worktree with a clean slate.
-	// TODO: we might want to give an option to use main/master instead of the current branch.
+	// Create a new worktree from the current HEAD commit so each session starts
+	// from a clean, stable snapshot of the repository state.
 	if _, err := g.runGitCommand(g.repoPath, "worktree", "add", "-b", g.branchName, g.worktreePath, headCommit); err != nil {
 		return fmt.Errorf("failed to create worktree from commit %s: %w", headCommit, err)
 	}
@@ -151,8 +166,9 @@ func (g *GitWorktree) Prune() error {
 	return nil
 }
 
-// CleanupWorktrees removes all worktrees and their associated branches
-func CleanupWorktrees() error {
+// CleanupWorktrees removes all worktrees and their associated branches.
+// repoPath must be a path within the git repository to operate on.
+func CleanupWorktrees(repoPath string) error {
 	worktreesDir, err := getWorktreeDirectory()
 	if err != nil {
 		return fmt.Errorf("failed to get worktree directory: %w", err)
@@ -160,11 +176,15 @@ func CleanupWorktrees() error {
 
 	entries, err := os.ReadDir(worktreesDir)
 	if err != nil {
+		if os.IsNotExist(err) {
+			// Nothing to clean up if the directory doesn't exist yet.
+			return nil
+		}
 		return fmt.Errorf("failed to read worktree directory: %w", err)
 	}
 
 	// Get a list of all branches associated with worktrees
-	cmd := exec.Command("git", "worktree", "list", "--porcelain")
+	cmd := exec.Command("git", "-C", repoPath, "worktree", "list", "--porcelain")
 	output, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("failed to list worktrees: %w", err)
@@ -191,26 +211,36 @@ func CleanupWorktrees() error {
 		if entry.IsDir() {
 			worktreePath := filepath.Join(worktreesDir, entry.Name())
 
+			// Remove the worktree via git so that its internal registration is
+			// cleaned up — do NOT use os.RemoveAll directly, as that leaves a
+			// stale entry in .git/worktrees/ requiring a manual `git worktree prune`.
+			removeCmd := exec.Command("git", "-C", repoPath, "worktree", "remove", "-f", worktreePath)
+			if removeOut, removeErr := removeCmd.CombinedOutput(); removeErr != nil {
+				log.ErrorLog.Printf("failed to remove worktree %s: %v (%s)", worktreePath, removeErr, strings.TrimSpace(string(removeOut)))
+				// Fallback: remove the directory directly so the on-disk state is
+				// cleaned up even if git disagrees.
+				if err := os.RemoveAll(worktreePath); err != nil {
+					log.ErrorLog.Printf("failed to remove worktree directory %s: %v", worktreePath, err)
+				}
+			}
+
 			// Delete the branch associated with this worktree if found
 			for path, branch := range worktreeBranches {
-				if strings.Contains(path, entry.Name()) {
+				if filepath.Base(path) == entry.Name() {
 					// Delete the branch
-					deleteCmd := exec.Command("git", "branch", "-D", branch)
-					if err := deleteCmd.Run(); err != nil {
+					deleteCmd := exec.Command("git", "-C", repoPath, "branch", "-D", branch)
+					if deleteOut, deleteErr := deleteCmd.CombinedOutput(); deleteErr != nil {
 						// Log the error but continue with other worktrees
-						log.ErrorLog.Printf("failed to delete branch %s: %v", branch, err)
+						log.ErrorLog.Printf("failed to delete branch %s: %v (%s)", branch, deleteErr, strings.TrimSpace(string(deleteOut)))
 					}
 					break
 				}
 			}
-
-			// Remove the worktree directory
-			os.RemoveAll(worktreePath)
 		}
 	}
 
 	// You have to prune the cleaned up worktrees.
-	cmd = exec.Command("git", "worktree", "prune")
+	cmd = exec.Command("git", "-C", repoPath, "worktree", "prune")
 	_, err = cmd.Output()
 	if err != nil {
 		return fmt.Errorf("failed to prune worktrees: %w", err)

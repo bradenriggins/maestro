@@ -1,11 +1,11 @@
 package ui
 
 import (
-	"claude-conductor/cmd/cmd_test"
-	"claude-conductor/log"
-	"claude-conductor/session"
-	"claude-conductor/session/tmux"
 	"fmt"
+	"maestro/cmd/cmd_test"
+	"maestro/log"
+	"maestro/session"
+	"maestro/session/tmux"
 	"os/exec"
 	"strings"
 	"testing"

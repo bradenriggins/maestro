@@ -1,7 +1,9 @@
 version: 2.9
 
+project_name: maestro
+
 builds:
-  - binary: claude-squad
+  - binary: maestro
     goos:
       - darwin
       - linux

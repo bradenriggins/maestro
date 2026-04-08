@@ -15,7 +15,7 @@ func makeTestRegistry() Registry {
 			"orch-1": {
 				Account:      "alice",
 				Role:         "orchestrator",
-				TmuxSession:  "claudeconductor_orch-1",
+				TmuxSession:  "maestro_orch-1",
 				WorktreePath: "/tmp/orch-1",
 				Branch:       "main",
 				Status:       StateIdle,
@@ -25,7 +25,7 @@ func makeTestRegistry() Registry {
 			"worker-1": {
 				Account:      "bob",
 				Role:         "worker",
-				TmuxSession:  "claudeconductor_worker-1",
+				TmuxSession:  "maestro_worker-1",
 				WorktreePath: "/tmp/worker-1",
 				Branch:       "feat/foo",
 				Status:       StateWorking,
@@ -35,7 +35,7 @@ func makeTestRegistry() Registry {
 			"worker-2": {
 				Account:      "carol",
 				Role:         "worker",
-				TmuxSession:  "claudeconductor_worker-2",
+				TmuxSession:  "maestro_worker-2",
 				WorktreePath: "/tmp/worker-2",
 				Branch:       "feat/bar",
 				Status:       StateIdle,
@@ -84,8 +84,10 @@ func TestLoadRegistryFromPath_NilInstancesInitialized(t *testing.T) {
 }
 
 func TestLoadRegistryFromPath_NotFound(t *testing.T) {
-	_, err := LoadRegistryFromPath("/nonexistent/path/registry.json")
-	assert.Error(t, err)
+	reg, err := LoadRegistryFromPath("/nonexistent/path/registry.json")
+	require.NoError(t, err, "missing file should return an empty registry, not an error")
+	assert.NotNil(t, reg)
+	assert.Len(t, reg.Instances, 0)
 }
 
 func TestListWorkers(t *testing.T) {

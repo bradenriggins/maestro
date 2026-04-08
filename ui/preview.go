@@ -1,8 +1,8 @@
 package ui
 
 import (
-	"claude-conductor/session"
 	"fmt"
+	"maestro/session"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/viewport"
@@ -45,7 +45,7 @@ func (p *PreviewPane) SetSize(width, maxHeight int) {
 func (p *PreviewPane) setFallbackState(message string) {
 	p.previewState = previewState{
 		fallback: true,
-		text:     lipgloss.JoinVertical(lipgloss.Center, FallBackText, "", message),
+		text:     lipgloss.JoinVertical(lipgloss.Center, fallbackArt, "", message),
 	}
 }
 
@@ -113,6 +113,19 @@ func (p *PreviewPane) UpdateContent(instance *session.Instance) error {
 	}
 
 	return nil
+}
+
+// SetContent sets the preview pane content directly with pre-fetched text.
+// This is used by the background preview-capture path so that the tmux
+// subprocess never runs on the BubbleTea main loop.
+func (p *PreviewPane) SetContent(content string) {
+	if p.isScrolling {
+		return // don't clobber scroll-mode viewport
+	}
+	p.previewState = previewState{
+		fallback: false,
+		text:     content,
+	}
 }
 
 // Returns the preview pane content as a string.

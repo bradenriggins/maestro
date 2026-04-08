@@ -1,8 +1,8 @@
 package tmux
 
 import (
-	cmd2 "claude-conductor/cmd"
 	"fmt"
+	cmd2 "maestro/cmd"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"claude-conductor/cmd/cmd_test"
+	"maestro/cmd/cmd_test"
 
 	"github.com/stretchr/testify/require"
 )
@@ -45,8 +45,17 @@ func TestSanitizeName(t *testing.T) {
 	session := NewTmuxSession("asdf", "program")
 	require.Equal(t, TmuxPrefix+"asdf", session.sanitizedName)
 
+	// Whitespace is stripped and runs of special characters are collapsed to "_".
+	// "a sd f . . asdf" → strip spaces → "asdf..asdf" → collapse ".." → "asdf_asdf"
 	session = NewTmuxSession("a sd f . . asdf", "program")
-	require.Equal(t, TmuxPrefix+"asdf__asdf", session.sanitizedName)
+	require.Equal(t, TmuxPrefix+"asdf_asdf", session.sanitizedName)
+
+	// Colon, braces, and other tmux-special chars are replaced with "_".
+	session = NewTmuxSession("feat:login", "program")
+	require.Equal(t, TmuxPrefix+"feat_login", session.sanitizedName)
+
+	session = NewTmuxSession("session{foo}$bar", "program")
+	require.Equal(t, TmuxPrefix+"session_foo_bar", session.sanitizedName)
 }
 
 func TestStartTmuxSession(t *testing.T) {
@@ -72,9 +81,9 @@ func TestStartTmuxSession(t *testing.T) {
 	err := session.Start(workdir)
 	require.NoError(t, err)
 	require.Equal(t, 2, len(ptyFactory.cmds))
-	require.Equal(t, fmt.Sprintf("tmux new-session -d -s claudeconductor_test-session -c %s claude", workdir),
+	require.Equal(t, fmt.Sprintf("tmux new-session -d -s maestro_test-session -c %s claude", workdir),
 		cmd2.ToString(ptyFactory.cmds[0]))
-	require.Equal(t, "tmux attach-session -t claudeconductor_test-session",
+	require.Equal(t, "tmux attach-session -t maestro_test-session",
 		cmd2.ToString(ptyFactory.cmds[1]))
 
 	require.Equal(t, 2, len(ptyFactory.files))

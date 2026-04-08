@@ -1,8 +1,8 @@
 package git
 
 import (
-	"claude-conductor/log"
 	"fmt"
+	"maestro/log"
 	"os/exec"
 	"strings"
 )
@@ -150,11 +150,14 @@ func (g *GitWorktree) CommitChanges(commitMessage string) error {
 
 // IsDirty checks if the worktree has uncommitted changes
 func (g *GitWorktree) IsDirty() (bool, error) {
+	if g.worktreePath == "" {
+		return false, fmt.Errorf("cannot check dirty state: worktree path is empty (worktree not set up)")
+	}
 	output, err := g.runGitCommand(g.worktreePath, "status", "--porcelain")
 	if err != nil {
 		return false, fmt.Errorf("failed to check worktree status: %w", err)
 	}
-	return len(output) > 0, nil
+	return len(strings.TrimSpace(output)) > 0, nil
 }
 
 // IsBranchCheckedOut checks if the instance branch is currently checked out

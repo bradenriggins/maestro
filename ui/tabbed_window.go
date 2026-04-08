@@ -1,9 +1,9 @@
 package ui
 
 import (
-	"claude-conductor/log"
-	"claude-conductor/session"
 	"github.com/charmbracelet/lipgloss"
+	"maestro/log"
+	"maestro/session"
 )
 
 func tabBorderWithBottom(left, middle, right string) lipgloss.Border {
@@ -204,6 +204,15 @@ func (w *TabbedWindow) CleanupTerminal() {
 // CleanupTerminalForInstance closes the cached terminal session for the given instance title.
 func (w *TabbedWindow) CleanupTerminalForInstance(title string) {
 	w.terminal.CloseForInstance(title)
+}
+
+// SetPreviewContent sets the preview pane content directly with pre-fetched text,
+// bypassing the blocking instance.Preview() call.  Only effective on the preview tab.
+func (w *TabbedWindow) SetPreviewContent(content string) {
+	if w.activeTab != PreviewTab {
+		return
+	}
+	w.preview.SetContent(content)
 }
 
 // IsPreviewInScrollMode returns true if the preview pane is in scroll mode

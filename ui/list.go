@@ -1,11 +1,11 @@
 package ui
 
 import (
-	"claude-conductor/log"
-	"claude-conductor/pkg/accounts"
-	"claude-conductor/session"
 	"errors"
 	"fmt"
+	"maestro/log"
+	"maestro/pkg/accounts"
+	"maestro/session"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -162,16 +162,26 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 		badge = accountBadgeStyle.Render(badgePlain)
 	}
 
+	// Build model badge (dim, shown after account badge if Model is set).
+	var modelBadge string
+	modelBadgeWidth := 0
+	if i.Model != "" {
+		modelBadgePlain := " " + i.Model
+		modelBadgeWidth = runewidth.StringWidth(modelBadgePlain)
+		modelBadgeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+		modelBadge = modelBadgeStyle.Render(modelBadgePlain)
+	}
+
 	// Cut the title if it's too long
 	titleText := i.Title
-	widthAvail := r.width - 3 - runewidth.StringWidth(prefix) - 1 - rolePrefixWidth - badgeWidth
+	widthAvail := r.width - 3 - runewidth.StringWidth(prefix) - 1 - rolePrefixWidth - badgeWidth - modelBadgeWidth
 	if widthAvail > 0 && runewidth.StringWidth(titleText) > widthAvail {
 		titleText = runewidth.Truncate(titleText, widthAvail-3, "...")
 	}
 	titleInner := fmt.Sprintf("%s %s%s", prefix, rolePrefix, titleText)
 	title := titleS.Render(lipgloss.JoinHorizontal(
 		lipgloss.Left,
-		lipgloss.Place(r.width-3, 1, lipgloss.Left, lipgloss.Center, titleInner+badge),
+		lipgloss.Place(r.width-3, 1, lipgloss.Left, lipgloss.Center, titleInner+badge+modelBadge),
 		" ",
 		join,
 	))
@@ -275,6 +285,14 @@ func (l *List) String() string {
 	}
 
 	b.WriteString("\n")
+
+	// Show legend above instance list (only when there are items to display).
+	if len(l.items) > 0 {
+		legend := lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("★ orchestrator  · worker  (model shown after account)")
+		b.WriteString("  ")
+		b.WriteString(legend)
+	}
+
 	b.WriteString("\n")
 
 	// Render the list.
@@ -297,17 +315,17 @@ func (l *List) Down() {
 	}
 }
 
-// Kill selects the next item in the list.
+// Kill removes the selected instance from the list (in-memory only).
+// The caller is responsible for terminating the underlying tmux session
+// before calling this method (e.g. via instance.Kill() inside a tea.Cmd).
 func (l *List) Kill() {
 	if len(l.items) == 0 {
 		return
 	}
-	targetInstance := l.items[l.selectedIdx]
-
-	// Kill the tmux session
-	if err := targetInstance.Kill(); err != nil {
-		log.ErrorLog.Printf("could not kill instance: %v", err)
+	if l.selectedIdx < 0 || l.selectedIdx >= len(l.items) {
+		return
 	}
+	targetInstance := l.items[l.selectedIdx]
 
 	// If you delete the last one in the list, select the previous one.
 	if l.selectedIdx == len(l.items)-1 {
@@ -326,7 +344,35 @@ func (l *List) Kill() {
 	l.items = append(l.items[:l.selectedIdx], l.items[l.selectedIdx+1:]...)
 }
 
+// RemoveByName removes the instance with the given name from the list (in-memory only).
+// No subprocess I/O is performed. If no instance with that name is found, this is a no-op.
+func (l *List) RemoveByName(name string) {
+	for i, item := range l.items {
+		if item.Title == name {
+			// Select the previous item if we're removing the last one.
+			if i == len(l.items)-1 {
+				defer l.Up()
+			}
+			// Unregister the reponame.
+			repoName, err := item.RepoName()
+			if err != nil {
+				log.ErrorLog.Printf("could not get repo name: %v", err)
+			} else {
+				l.rmRepo(repoName)
+			}
+			l.items = append(l.items[:i], l.items[i+1:]...)
+			return
+		}
+	}
+}
+
 func (l *List) Attach() (chan struct{}, error) {
+	if len(l.items) == 0 {
+		return nil, fmt.Errorf("no instances to attach to")
+	}
+	if l.selectedIdx < 0 || l.selectedIdx >= len(l.items) {
+		return nil, fmt.Errorf("selected index %d is out of range", l.selectedIdx)
+	}
 	targetInstance := l.items[l.selectedIdx]
 	return targetInstance.Attach()
 }
@@ -386,7 +432,7 @@ func (l *List) GetSelectedInstance() *session.Instance {
 
 // SetSelectedInstance sets the selected index. Noop if the index is out of bounds.
 func (l *List) SetSelectedInstance(idx int) {
-	if idx >= len(l.items) {
+	if idx < 0 || idx >= len(l.items) {
 		return
 	}
 	l.selectedIdx = idx

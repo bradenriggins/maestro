@@ -1,20 +1,22 @@
 package orchestration
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
-	"claude-conductor/pkg/accounts"
+	"maestro/log"
+	"maestro/pkg/accounts"
 )
 
 // AccountUsage represents usage data for a single account.
 type AccountUsage struct {
 	AccountName   string  `json:"account_name"`
 	Role          string  `json:"role"`
-	UsagePercent  float64 `json:"usage_percent"`  // 0.0 to 100.0
+	Program       string  `json:"program,omitempty"`
+	Model         string  `json:"model,omitempty"`
+	UsagePercent  float64 `json:"usage_percent"` // 0.0 to 100.0
 	MessagesUsed  int     `json:"messages_used"`
 	MessagesLimit int     `json:"messages_limit"`
 	WindowResetAt string  `json:"window_reset_at,omitempty"` // ISO timestamp
@@ -25,21 +27,6 @@ type AccountUsage struct {
 type UsageReport struct {
 	Accounts  []AccountUsage `json:"accounts"`
 	UpdatedAt string         `json:"updated_at"`
-}
-
-// EstimatedLimits per tier (messages per 5-hour rolling window)
-var EstimatedLimits = map[string]int{
-	"max5":  225,
-	"max20": 900,
-	"max":   225, // default if tier unknown
-}
-
-// GetTierLimit returns the estimated message limit for a subscription tier.
-func GetTierLimit(tier string) int {
-	if limit, ok := EstimatedLimits[tier]; ok {
-		return limit
-	}
-	return 225 // conservative default
 }
 
 // CollectUsage gathers usage data for all configured accounts.
@@ -53,6 +40,8 @@ func CollectUsage(cfg *accounts.ConductorConfig) (*UsageReport, error) {
 		usage := AccountUsage{
 			AccountName: acct.Name,
 			Role:        string(acct.Role),
+			Program:     acct.Program,
+			Model:       acct.Model,
 			LastUpdated: NowISO(),
 		}
 
@@ -64,25 +53,31 @@ func CollectUsage(cfg *accounts.ConductorConfig) (*UsageReport, error) {
 		}
 		usage.MessagesLimit = limit
 
-		// Try real-time statusLine data first
-		slUsage := collectStatusLineUsage(acct.Name)
-		if slUsage != nil && slUsage.FiveHour != nil {
-			usage.UsagePercent = slUsage.FiveHour.UsedPercentage
-			usage.MessagesUsed = int(slUsage.FiveHour.UsedPercentage * float64(limit) / 100.0)
-			if slUsage.FiveHour.ResetsAt > 0 {
-				resetTime := time.Unix(slUsage.FiveHour.ResetsAt, 0).UTC().Format(time.RFC3339)
-				usage.WindowResetAt = resetTime
+		if acct.Program == "codex" {
+			// Codex: use rate limit polling
+			codexUsage := collectCodexUsage(acct.Name, acct.ConfigDir)
+			if codexUsage != nil {
+				usage.UsagePercent = codexUsage.UsedPercent
+				usage.MessagesUsed = int(codexUsage.UsedPercent * float64(limit) / 100.0)
+				if codexUsage.ResetsAt > 0 {
+					resetTime := time.Unix(codexUsage.ResetsAt, 0).UTC().Format(time.RFC3339)
+					usage.WindowResetAt = resetTime
+				}
 			}
 		} else {
-			// Fallback to stats-cache heuristic
-			statsPath := filepath.Join(acct.ConfigDir, "stats-cache.json")
-			messageCount := countRecentMessages(statsPath)
-			usage.MessagesUsed = messageCount
-			if limit > 0 {
-				usage.UsagePercent = float64(messageCount) / float64(limit) * 100.0
-				if usage.UsagePercent > 100.0 {
-					usage.UsagePercent = 100.0
+			// Claude: try real-time statusLine data
+			slUsage := collectStatusLineUsage(acct.Name)
+			if slUsage != nil && slUsage.FiveHour != nil {
+				usage.UsagePercent = slUsage.FiveHour.UsedPercentage
+				usage.MessagesUsed = int(slUsage.FiveHour.UsedPercentage * float64(limit) / 100.0)
+				if slUsage.FiveHour.ResetsAt > 0 {
+					resetTime := time.Unix(slUsage.FiveHour.ResetsAt, 0).UTC().Format(time.RFC3339)
+					usage.WindowResetAt = resetTime
 				}
+			} else {
+				// No real-time data available -- show 0% rather than fabricating an estimate.
+				usage.UsagePercent = 0
+				usage.MessagesUsed = 0
 			}
 		}
 
@@ -92,88 +87,23 @@ func CollectUsage(cfg *accounts.ConductorConfig) (*UsageReport, error) {
 	return report, nil
 }
 
-// countRecentMessages reads stats-cache.json and counts messages in the last 5 hours.
-func countRecentMessages(statsPath string) int {
-	data, err := os.ReadFile(statsPath)
-	if err != nil {
-		return 0
-	}
-
-	// stats-cache.json structure varies, but typically contains session data
-	// with timestamps. Try to parse as a generic JSON structure.
-	var stats interface{}
-	if err := json.Unmarshal(data, &stats); err != nil {
-		return 0
-	}
-
-	// Try to extract message counts from the stats
-	// The file may be an array of session records or a map with daily stats
-	cutoff := time.Now().Add(-5 * time.Hour)
-	return countMessagesAfter(stats, cutoff)
-}
-
-// countMessagesAfter recursively looks for message count data after a cutoff time.
-func countMessagesAfter(data interface{}, cutoff time.Time) int {
-	switch v := data.(type) {
-	case map[string]interface{}:
-		total := 0
-		// Look for "messages" or "message_count" fields
-		if msgs, ok := v["messages"]; ok {
-			if count, ok := msgs.(float64); ok {
-				total += int(count)
-			}
-		}
-		// Look for timestamped entries
-		for key, val := range v {
-			// Try parsing key as a date (YYYY-MM-DD format)
-			if t, err := time.Parse("2006-01-02", key); err == nil {
-				if t.After(cutoff) {
-					total += countMessagesInEntry(val)
-				}
-			} else {
-				// Recurse into nested structures
-				total += countMessagesAfter(val, cutoff)
-			}
-		}
-		return total
-	case []interface{}:
-		total := 0
-		for _, item := range v {
-			total += countMessagesAfter(item, cutoff)
-		}
-		return total
-	}
-	return 0
-}
-
-// countMessagesInEntry extracts message count from a daily stats entry.
-func countMessagesInEntry(entry interface{}) int {
-	switch v := entry.(type) {
-	case float64:
-		return int(v)
-	case map[string]interface{}:
-		total := 0
-		for _, val := range v {
-			if count, ok := val.(float64); ok {
-				total += int(count)
-			}
-		}
-		return total
-	}
-	return 0
-}
-
-// SaveUsageReport writes the usage report to ~/.claude-conductor/usage.json.
+// SaveUsageReport writes the usage report to ~/.maestro/usage.json.
+// It creates the conductor directory if it does not already exist.
 func SaveUsageReport(report *UsageReport) error {
 	base, err := accounts.ConductorDir()
 	if err != nil {
 		return err
 	}
+	if err := os.MkdirAll(base, 0700); err != nil {
+		return fmt.Errorf("failed to create conductor dir: %w", err)
+	}
 	path := filepath.Join(base, "usage.json")
 	return AtomicWriteJSON(path, report)
 }
 
-// LoadUsageReport reads the usage report from ~/.claude-conductor/usage.json.
+// LoadUsageReport reads the usage report from ~/.maestro/usage.json.
+// Returns nil, nil if the file is missing or empty.
+// Returns nil, nil if the file contains corrupt JSON (logs a warning).
 func LoadUsageReport() (*UsageReport, error) {
 	base, err := accounts.ConductorDir()
 	if err != nil {
@@ -185,7 +115,8 @@ func LoadUsageReport() (*UsageReport, error) {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, err
+		log.WarningLog.Printf("usage report: %s is corrupt, returning nil: %v", path, err)
+		return nil, nil
 	}
 	return &report, nil
 }
@@ -210,6 +141,9 @@ func FormatUsageSummary(report *UsageReport) string {
 
 func renderUsageBar(percent float64, width int) string {
 	filled := int(percent / 100.0 * float64(width))
+	if filled < 0 {
+		filled = 0
+	}
 	if filled > width {
 		filled = width
 	}
@@ -222,4 +156,161 @@ func renderUsageBar(percent float64, width int) string {
 		}
 	}
 	return bar
+}
+
+// RoutingStrategy describes how the orchestrator should route the next task.
+type RoutingStrategy int
+
+const (
+	// StrategyDispatchToWorker: workers have capacity, dispatch normally.
+	StrategyDispatchToWorker RoutingStrategy = iota
+	// StrategyOrchestratorSubagent: all workers are saturated but orchestrator
+	// has significant headroom — spawn a subagent on the orchestrator account.
+	StrategyOrchestratorSubagent
+	// StrategyWait: all accounts are near capacity, hold off.
+	StrategyWait
+)
+
+// Scheduler-specific routing strategy constants (used by ComputeSchedule / RunScheduledDispatch).
+const (
+	StrategyDirect     RoutingStrategy = 10
+	StrategyRoundRobin RoutingStrategy = 11
+	StrategyLeastUsage RoutingStrategy = 12
+	StrategyScheduled  RoutingStrategy = 13
+)
+
+// RoutingAdvice holds the recommended task routing strategy and context.
+type RoutingAdvice struct {
+	Strategy          RoutingStrategy
+	RecommendedWorker string  // non-empty when Strategy == StrategyDispatchToWorker
+	OrchestratorUsage float64 // 0.0-100.0
+	MinWorkerUsage    float64
+	MaxWorkerUsage    float64
+	Reason            string
+	TargetWorker      string        // used by scheduler StrategyDirect
+	ScheduledWorker   string        // used by scheduler StrategyScheduled
+	ScheduledAt       time.Time     // when the scheduled dispatch will fire
+	ScheduledWait     time.Duration // how long to wait before dispatching
+}
+
+// WorkerSaturationThreshold is the usage % above which a worker is considered saturated.
+const WorkerSaturationThreshold = 75.0
+
+// OrchestratorHeadroomThreshold is the usage % below which the orchestrator is
+// considered to have meaningful headroom for self-spawned subagents.
+const OrchestratorHeadroomThreshold = 40.0
+
+// GetRoutingAdvice returns the recommended task routing strategy based on current
+// account usage. It requires a populated UsageReport (from CollectUsage).
+func GetRoutingAdvice(report *UsageReport) RoutingAdvice {
+	if report == nil || len(report.Accounts) == 0 {
+		return RoutingAdvice{
+			Strategy: StrategyDispatchToWorker,
+			Reason:   "no usage data available; dispatching to worker",
+		}
+	}
+
+	var orchestratorUsage float64
+	orchestratorFound := false
+	var workerUsages []float64
+	var bestWorker string
+	bestWorkerUsage := 101.0 // above max so first real worker wins
+
+	for _, acct := range report.Accounts {
+		if acct.Role == "orchestrator" {
+			orchestratorUsage = acct.UsagePercent
+			orchestratorFound = true
+		} else {
+			workerUsages = append(workerUsages, acct.UsagePercent)
+			if acct.UsagePercent < bestWorkerUsage {
+				bestWorkerUsage = acct.UsagePercent
+				bestWorker = acct.AccountName
+			}
+		}
+	}
+
+	if len(workerUsages) == 0 {
+		return RoutingAdvice{
+			Strategy:          StrategyOrchestratorSubagent,
+			OrchestratorUsage: orchestratorUsage,
+			Reason:            "no workers configured; use orchestrator subagents",
+		}
+	}
+
+	// Compute min/max worker usage
+	minUsage, maxUsage := workerUsages[0], workerUsages[0]
+	allSaturated := true
+	for _, u := range workerUsages {
+		if u < minUsage {
+			minUsage = u
+		}
+		if u > maxUsage {
+			maxUsage = u
+		}
+		if u < WorkerSaturationThreshold {
+			allSaturated = false
+		}
+	}
+
+	advice := RoutingAdvice{
+		OrchestratorUsage: orchestratorUsage,
+		MinWorkerUsage:    minUsage,
+		MaxWorkerUsage:    maxUsage,
+	}
+
+	if !allSaturated {
+		advice.Strategy = StrategyDispatchToWorker
+		advice.RecommendedWorker = bestWorker
+		advice.MinWorkerUsage = bestWorkerUsage
+		advice.Reason = fmt.Sprintf("worker %q has %.0f%% usage (below %.0f%% threshold)",
+			bestWorker, bestWorkerUsage, WorkerSaturationThreshold)
+		return advice
+	}
+
+	// All workers are saturated — check if orchestrator has meaningful headroom
+	if orchestratorFound && orchestratorUsage < OrchestratorHeadroomThreshold {
+		advice.Strategy = StrategyOrchestratorSubagent
+		advice.Reason = fmt.Sprintf(
+			"all workers saturated (min %.0f%%), orchestrator has %.0f%% headroom — use own subagents",
+			minUsage, 100.0-orchestratorUsage)
+		return advice
+	}
+
+	// Everything is saturated
+	advice.Strategy = StrategyWait
+	advice.Reason = fmt.Sprintf(
+		"all workers saturated (min %.0f%%) and orchestrator at %.0f%% — wait for window reset",
+		minUsage, orchestratorUsage)
+	return advice
+}
+
+// FormatRoutingAdvice returns a human-readable one-liner for the routing advice.
+func FormatRoutingAdvice(advice RoutingAdvice) string {
+	switch advice.Strategy {
+	case StrategyOrchestratorSubagent:
+		return fmt.Sprintf("⚡ Workers saturated (%.0f%%+ used) — spawn own subagent (%.0f%% headroom)",
+			advice.MinWorkerUsage, 100.0-advice.OrchestratorUsage)
+	case StrategyWait:
+		return fmt.Sprintf("⏳ All accounts near capacity — wait for 5h window reset")
+	case StrategyScheduled:
+		return fmt.Sprintf("Scheduling for %q in %s (reset at %s)",
+			advice.ScheduledWorker, advice.ScheduledWait.Round(time.Second), advice.ScheduledAt.Format("15:04 UTC"))
+	case StrategyDirect:
+		return fmt.Sprintf("Direct dispatch to %q", advice.TargetWorker)
+	case StrategyRoundRobin:
+		if advice.RecommendedWorker != "" {
+			return fmt.Sprintf("Round-robin dispatch to %q", advice.RecommendedWorker)
+		}
+		return "Round-robin dispatch to next available worker"
+	case StrategyLeastUsage:
+		if advice.RecommendedWorker != "" {
+			return fmt.Sprintf("Least-usage dispatch to %q (%.0f%% used)", advice.RecommendedWorker, advice.MinWorkerUsage)
+		}
+		return "Least-usage dispatch to lowest-utilization worker"
+	default:
+		if advice.RecommendedWorker != "" {
+			return fmt.Sprintf("→ Dispatch to %q (%.0f%% used)", advice.RecommendedWorker, advice.MinWorkerUsage)
+		}
+		return "→ Dispatch to worker"
+	}
 }

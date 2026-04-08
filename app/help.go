@@ -1,11 +1,11 @@
 package app
 
 import (
-	"claude-conductor/log"
-	"claude-conductor/session"
-	"claude-conductor/ui"
-	"claude-conductor/ui/overlay"
 	"fmt"
+	"maestro/log"
+	"maestro/session"
+	"maestro/ui"
+	"maestro/ui/overlay"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -27,7 +27,9 @@ type helpTypeInstanceStart struct {
 
 type helpTypeInstanceAttach struct{}
 
-type helpTypeInstanceCheckout struct{}
+type helpTypeInstanceCheckout struct {
+	instance *session.Instance
+}
 
 func helpStart(instance *session.Instance) helpText {
 	return helpTypeInstanceStart{instance: instance}
@@ -35,9 +37,9 @@ func helpStart(instance *session.Instance) helpText {
 
 func (h helpTypeGeneral) toContent() string {
 	content := lipgloss.JoinVertical(lipgloss.Left,
-		titleStyle.Render("Claude Conductor"),
+		titleStyle.Render("Maestro"),
 		"",
-		"A terminal UI that manages multiple Claude Code (and other local agents) in separate workspaces.",
+		"A terminal UI for running Claude Code and Codex sessions in isolated workspaces.",
 		"",
 		headerStyle.Render("Managing:"),
 		keyStyle.Render("n")+descStyle.Render("         - Create a new session"),
@@ -48,13 +50,13 @@ func (h helpTypeGeneral) toContent() string {
 		keyStyle.Render("ctrl-q")+descStyle.Render("    - Detach from session"),
 		"",
 		headerStyle.Render("Handoff:"),
-		keyStyle.Render("P")+descStyle.Render("         - Commit and push branch to github"),
+		keyStyle.Render("P")+descStyle.Render("         - Commit and push branch to GitHub"),
 		keyStyle.Render("p")+descStyle.Render("         - Pause: commit changes and pause session"),
 		keyStyle.Render("r")+descStyle.Render("         - Resume a paused session"),
 		"",
-		headerStyle.Render("Conductor:"),
+		headerStyle.Render("Maestro:"),
 		keyStyle.Render("o")+descStyle.Render("         - Orchestration overlay"),
-		keyStyle.Render("/")+descStyle.Render("         - Quick dispatch"),
+		keyStyle.Render("/")+descStyle.Render("         - Quick-dispatch palette"),
 		keyStyle.Render("d")+descStyle.Render("         - Show diff"),
 		keyStyle.Render("l")+descStyle.Render("         - Log viewer"),
 		keyStyle.Render("f")+descStyle.Render("         - Toggle preview mode"),
@@ -68,14 +70,20 @@ func (h helpTypeGeneral) toContent() string {
 }
 
 func (h helpTypeInstanceStart) toContent() string {
+	branch := "(unknown)"
+	program := "(unknown)"
+	if h.instance != nil {
+		branch = h.instance.Branch
+		program = h.instance.Program
+	}
 	content := lipgloss.JoinVertical(lipgloss.Left,
 		titleStyle.Render("Instance Created"),
 		"",
 		descStyle.Render("New session created:"),
 		descStyle.Render(fmt.Sprintf("• Git branch: %s (isolated worktree)",
-			lipgloss.NewStyle().Bold(true).Render(h.instance.Branch))),
+			lipgloss.NewStyle().Bold(true).Render(branch))),
 		descStyle.Render(fmt.Sprintf("• %s running in background tmux session",
-			lipgloss.NewStyle().Bold(true).Render(h.instance.Program))),
+			lipgloss.NewStyle().Bold(true).Render(program))),
 		"",
 		headerStyle.Render("Managing:"),
 		keyStyle.Render("↵")+descStyle.Render("     - Attach to the session to interact with it directly"),
@@ -99,10 +107,14 @@ func (h helpTypeInstanceAttach) toContent() string {
 }
 
 func (h helpTypeInstanceCheckout) toContent() string {
+	branchLine := "Changes will be committed locally. The branch name has been copied to your clipboard for you to checkout."
+	if h.instance != nil && h.instance.Branch != "" {
+		branchLine = fmt.Sprintf("Pause instance '%s'?\n\nChanges will be committed and branch '%s' preserved.", h.instance.Title, h.instance.Branch)
+	}
 	content := lipgloss.JoinVertical(lipgloss.Left,
 		titleStyle.Render("Pause Instance"),
 		"",
-		"Changes will be committed locally. The branch name has been copied to your clipboard for you to checkout.",
+		branchLine,
 		"",
 		"Feel free to make changes to the branch and commit them. When resuming, the session will continue from where you left off.",
 		"",
@@ -134,7 +146,7 @@ var (
 )
 
 // showHelpScreen displays the help screen overlay if it hasn't been shown before
-func (m *home) showHelpScreen(helpType helpText, onDismiss func()) (tea.Model, tea.Cmd) {
+func (m *home) showHelpScreen(helpType helpText, onDismiss func() tea.Cmd) (tea.Model, tea.Cmd) {
 	// Get the flag for this help type
 	var alwaysShow bool
 	switch helpType.(type) {
@@ -161,9 +173,9 @@ func (m *home) showHelpScreen(helpType helpText, onDismiss func()) (tea.Model, t
 		return m, nil
 	}
 
-	// Skip displaying the help screen
+	// Skip displaying the help screen — still run the onDismiss work (e.g. attach to tmux).
 	if onDismiss != nil {
-		onDismiss()
+		return m, onDismiss()
 	}
 	return m, nil
 }
@@ -171,15 +183,13 @@ func (m *home) showHelpScreen(helpType helpText, onDismiss func()) (tea.Model, t
 // handleHelpState handles key events when in help state
 func (m *home) handleHelpState(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Any key press will close the help overlay
-	shouldClose := m.textOverlay.HandleKeyPress(msg)
+	shouldClose, dismissCmd := m.textOverlay.HandleKeyPress(msg)
 	if shouldClose {
 		m.state = stateDefault
-		return m, tea.Sequence(
+		return m, tea.Batch(
+			dismissCmd,
 			tea.WindowSize(),
-			func() tea.Msg {
-				m.menu.SetState(ui.StateDefault)
-				return nil
-			},
+			func() tea.Msg { return menuStateMsg{state: ui.StateDefault} },
 		)
 	}
 

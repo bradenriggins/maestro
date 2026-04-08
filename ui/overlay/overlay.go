@@ -14,6 +14,17 @@ import (
 
 // Most of this code is modified from https://github.com/charmbracelet/lipgloss/pull/102
 
+// Pre-compiled regexes for ANSI color code replacement in PlaceOverlay.
+// These were previously compiled on every call, which is expensive in a hot render path.
+var (
+	// Match background color codes like \x1b[48;2;R;G;Bm or \x1b[48;5;Nm
+	bgColorRegex = regexp.MustCompile(`\x1b\[48;[25];[0-9;]+m`)
+	// Match foreground color codes like \x1b[38;2;R;G;Bm or \x1b[38;5;Nm
+	fgColorRegex = regexp.MustCompile(`\x1b\[38;[25];[0-9;]+m`)
+	// Match simple color codes like \x1b[31m
+	simpleColorRegex = regexp.MustCompile(`\x1b\[[0-9]+m`)
+)
+
 // WhitespaceOption sets a styling rule for rendering whitespace.
 type WhitespaceOption func(*whitespace)
 
@@ -60,16 +71,6 @@ func PlaceOverlay(
 	// Create a new array of background lines with the fade effect applied
 	fadedBgLines := make([]string, len(bgLines))
 
-	// Compile regular expressions for ANSI color codes
-	// Match background color codes like \x1b[48;2;R;G;Bm or \x1b[48;5;Nm
-	bgColorRegex := regexp.MustCompile(`\x1b\[48;[25];[0-9;]+m`)
-
-	// Match foreground color codes like \x1b[38;2;R;G;Bm or \x1b[38;5;Nm
-	fgColorRegex := regexp.MustCompile(`\x1b\[38;[25];[0-9;]+m`)
-
-	// Match simple color codes like \x1b[31m
-	simpleColorRegex := regexp.MustCompile(`\x1b\[[0-9]+m`)
-
 	for i, line := range bgLines {
 		// Replace background color codes with a faded version
 		content := bgColorRegex.ReplaceAllString(line, "\x1b[48;5;236m") // Dark gray background
@@ -112,19 +113,24 @@ func PlaceOverlay(
 		}
 		shadowStr := strings.Join(shadowLines, "\n")
 
-		// Place shadow on background at an offset (e.g., +1, +1)
+		// Place shadow on background at an offset (e.g., +1, +1), compositing the result
+		// back into bg so the shadow is visible beneath the foreground layer.
 		const shadowOffsetX, shadowOffsetY = 1, 1
-		_ = PlaceOverlay(placeX+shadowOffsetX, placeY+shadowOffsetY, shadowStr, bg, false, false, opts...)
+		bg = PlaceOverlay(placeX+shadowOffsetX, placeY+shadowOffsetY, shadowStr, bg, false, false, opts...)
+		// Re-derive bgLines from the updated bg string.
+		bgLines, _ = getLines(bg)
 	}
 
-	// Check if foreground exceeds background size
+	// Check if foreground exceeds background size in both dimensions.
 	if fgWidth >= bgWidth && fgHeight >= bgHeight {
-		return fg // Return foreground if it's larger than background
+		return fg // Return foreground if it's larger than background in all dimensions
 	}
 
-	// Clamp coordinates to ensure foreground fits within background
-	placeX = clamp(placeX, 0, bgWidth-fgWidth)
-	placeY = clamp(placeY, 0, bgHeight-fgHeight)
+	// Clamp coordinates to ensure foreground fits within background.
+	// Use overlayMax to guard against negative upper bounds when the foreground
+	// exceeds the background in a single dimension (e.g. wider but shorter).
+	placeX = clamp(placeX, 0, overlayMax(bgWidth-fgWidth, 0))
+	placeY = clamp(placeY, 0, overlayMax(bgHeight-fgHeight, 0))
 
 	// Apply whitespace options
 	ws := &whitespace{}
@@ -210,17 +216,17 @@ func cutLeft(s string, cutWidth int) string {
 }
 
 func clamp(v, lower, upper int) int {
-	return min(max(v, lower), upper)
+	return overlayMin(overlayMax(v, lower), upper)
 }
 
-func max(a, b int) int {
+func overlayMax(a, b int) int {
 	if a > b {
 		return a
 	}
 	return b
 }
 
-func min(a, b int) int {
+func overlayMin(a, b int) int {
 	if a < b {
 		return a
 	}
@@ -244,12 +250,17 @@ func (w whitespace) render(width int) string {
 
 	// Cycle through runes and print them into the whitespace.
 	for i := 0; i < width; {
-		b.WriteRune(r[j])
+		current := r[j]
+		b.WriteRune(current)
 		j++
 		if j >= len(r) {
 			j = 0
 		}
-		i += ansi.PrintableRuneWidth(string(r[j]))
+		w := ansi.PrintableRuneWidth(string(current))
+		if w == 0 {
+			w = 1 // Prevent infinite loop on zero-width runes
+		}
+		i += w
 	}
 
 	// Fill any extra gaps white spaces. This might be necessary if any runes

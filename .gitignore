@@ -1,6 +1,11 @@
 .idea
 .aider*
-claude-squad
 **.DS_Store
-cs
+.env
+.env.*
+credentials.json
+maestro
+main
 claude-conductor
+claude-squad
+cs

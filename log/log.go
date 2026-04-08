@@ -14,18 +14,25 @@ var (
 	ErrorLog   *log.Logger
 )
 
-var logFileName = filepath.Join(os.TempDir(), "claudeconductor.log")
+var logFileName = filepath.Join(os.TempDir(), "maestro.log")
 
 var globalLogFile *os.File
 
+func init() {
+	// Pre-initialize loggers to stderr so callers (e.g. config.DefaultConfig)
+	// never dereference a nil logger before Initialize() is called.
+	WarningLog = log.New(os.Stderr, "WARNING:", log.Ldate|log.Ltime|log.Lshortfile)
+	InfoLog = log.New(os.Stderr, "INFO:", log.Ldate|log.Ltime|log.Lshortfile)
+	ErrorLog = log.New(os.Stderr, "ERROR:", log.Ldate|log.Ltime|log.Lshortfile)
+}
+
 // Initialize should be called once at the beginning of the program to set up logging.
 // defer Close() after calling this function. It sets the go log output to the file in
-// the os temp directory.
-
-func Initialize(daemon bool) {
-	f, err := os.OpenFile(logFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+// the os temp directory. Returns an error if the log file cannot be opened.
+func Initialize(daemon bool) error {
+	f, err := os.OpenFile(logFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
-		panic(fmt.Sprintf("could not open log file: %s", err))
+		return fmt.Errorf("could not open log file: %w", err)
 	}
 
 	// Set log format to include timestamp and file/line number
@@ -40,11 +47,15 @@ func Initialize(daemon bool) {
 	ErrorLog = log.New(f, fmt.Sprintf(fmtS, "ERROR:"), log.Ldate|log.Ltime|log.Lshortfile)
 
 	globalLogFile = f
+	return nil
 }
 
 func Close() {
+	if globalLogFile == nil {
+		return
+	}
 	_ = globalLogFile.Close()
-	// TODO: maybe only print if verbose flag is set?
+	// Keep the log path visible so interactive runs always surface where errors landed.
 	fmt.Println("wrote logs to " + logFileName)
 }
 
@@ -62,7 +73,6 @@ func NewEvery(timeout time.Duration) *Every {
 func (e *Every) ShouldLog() bool {
 	if e.timer == nil {
 		e.timer = time.NewTimer(e.timeout)
-		e.timer.Reset(e.timeout)
 		return true
 	}
 

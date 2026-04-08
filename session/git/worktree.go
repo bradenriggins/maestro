@@ -1,9 +1,9 @@
 package git
 
 import (
-	"claude-conductor/config"
-	"claude-conductor/log"
 	"fmt"
+	"maestro/config"
+	"maestro/log"
 	"path/filepath"
 	"time"
 )

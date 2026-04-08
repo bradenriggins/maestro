@@ -1,10 +1,10 @@
 package ui
 
 import (
-	"claude-conductor/keys"
+	"maestro/keys"
 	"strings"
 
-	"claude-conductor/session"
+	"maestro/session"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -162,7 +162,7 @@ func (m *Menu) SetSize(width, height int) {
 func (m *Menu) String() string {
 	var s strings.Builder
 
-	// Define group boundaries
+	// Define group boundaries for separator rendering.
 	groups := []struct {
 		start int
 		end   int
@@ -173,7 +173,7 @@ func (m *Menu) String() string {
 	}
 
 	for i, k := range m.options {
-		binding := keys.GlobalkeyBindings[k]
+		binding := keys.GlobalKeyBindings[k]
 
 		var (
 			localActionStyle = actionGroupStyle
@@ -192,8 +192,15 @@ func (m *Menu) String() string {
 			// For empty state, the action group is the first group
 			inActionGroup = i <= 1
 		default:
-			// For other states, the action group is the second group
-			inActionGroup = i >= groups[1].start && i < groups[1].end
+			// For other states, the action group is the second group.
+			// Guard against out-of-range boundaries vs. the dynamic options slice.
+			if len(groups) > 1 {
+				g1Start := groups[1].start
+				g1End := groups[1].end
+				if g1Start < len(m.options) && g1End <= len(m.options) {
+					inActionGroup = i >= g1Start && i < g1End
+				}
+			}
 		}
 
 		if inActionGroup {
@@ -210,6 +217,10 @@ func (m *Menu) String() string {
 		if i != len(m.options)-1 {
 			isGroupEnd := false
 			for _, group := range groups {
+				// Guard against out-of-range group boundaries vs. the dynamic options slice.
+				if group.end-1 < 0 || group.end-1 >= len(m.options) {
+					continue
+				}
 				if i == group.end-1 {
 					s.WriteString(sepStyle.Render(verticalSeparator))
 					isGroupEnd = true

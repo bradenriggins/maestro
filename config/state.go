@@ -1,9 +1,9 @@
 package config
 
 import (
-	"claude-conductor/log"
 	"encoding/json"
 	"fmt"
+	"maestro/log"
 	"os"
 	"path/filepath"
 )
@@ -86,14 +86,15 @@ func LoadState() *State {
 	return &state
 }
 
-// SaveState saves the state to disk
+// SaveState saves the state to disk using an atomic write-then-rename to
+// prevent partially-written state files from concurrent saves.
 func SaveState(state *State) error {
 	configDir, err := GetConfigDir()
 	if err != nil {
 		return fmt.Errorf("failed to get config directory: %w", err)
 	}
 
-	if err := os.MkdirAll(configDir, 0755); err != nil {
+	if err := os.MkdirAll(configDir, 0700); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
@@ -103,7 +104,11 @@ func SaveState(state *State) error {
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
 
-	return os.WriteFile(statePath, data, 0644)
+	tmp := statePath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return fmt.Errorf("failed to write temp state file: %w", err)
+	}
+	return os.Rename(tmp, statePath)
 }
 
 // InstanceStorage interface implementation
@@ -114,8 +119,12 @@ func (s *State) SaveInstances(instancesJSON json.RawMessage) error {
 	return SaveState(s)
 }
 
-// GetInstances returns the raw instance data
+// GetInstances returns the raw instance data.
+// Returns an empty JSON array if InstancesData is nil (e.g. state file contained "{}").
 func (s *State) GetInstances() json.RawMessage {
+	if s.InstancesData == nil {
+		return json.RawMessage("[]")
+	}
 	return s.InstancesData
 }
 

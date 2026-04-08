@@ -27,7 +27,7 @@ const (
 	KeyShiftUp
 	KeyShiftDown
 
-	// Conductor-specific keybindings
+	// Maestro-specific keybindings
 	KeyOrchestration // o key — orchestration overlay
 	KeyQuickDispatch // / key — quick dispatch
 	KeyLogViewer     // l key — log viewer
@@ -36,8 +36,10 @@ const (
 	KeyHistory       // h key — task history
 )
 
-// GlobalKeyStringsMap is a global, immutable map string to keybinding.
-var GlobalKeyStringsMap = map[string]KeyName{
+// GlobalKeyNamesByString maps raw key strings to their logical key names.
+// Note: KeySubmitName shares the "enter" key with KeyEnter. The app remaps
+// KeyEnter → KeySubmitName when in stateNew (see handleMenuHighlighting).
+var GlobalKeyNamesByString = map[string]KeyName{
 	"up":         KeyUp,
 	"k":          KeyUp,
 	"down":       KeyDown,
@@ -60,10 +62,16 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"f":          KeyPreviewToggle,
 	"d":          KeyDiff,
 	"h":          KeyHistory,
+	// KeySubmitName maps to the same physical key as KeyEnter; the app
+	// promotes KeyEnter → KeySubmitName when stateNew is active so the
+	// menu can highlight the correct item.
+	// We deliberately do NOT add a second "enter" → KeySubmitName entry
+	// here because map keys must be unique. The promotion is handled in
+	// handleMenuHighlighting instead.
 }
 
-// GlobalkeyBindings is a global, immutable map of KeyName tot keybinding.
-var GlobalkeyBindings = map[KeyName]key.Binding{
+// GlobalKeyBindings maps logical key names to their Bubble Tea bindings.
+var GlobalKeyBindings = map[KeyName]key.Binding{
 	KeyUp: key.NewBinding(
 		key.WithKeys("up", "k"),
 		key.WithHelp("↑/k", "up"),
@@ -121,7 +129,7 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 		key.WithHelp("r", "resume"),
 	),
 
-	// -- Conductor keybindings --
+	// -- Maestro keybindings --
 
 	KeyOrchestration: key.NewBinding(
 		key.WithKeys("o"),

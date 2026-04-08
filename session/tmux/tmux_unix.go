@@ -3,7 +3,7 @@
 package tmux
 
 import (
-	"claude-conductor/log"
+	"maestro/log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -48,6 +48,10 @@ func (t *TmuxSession) monitorWindowSize() {
 		for {
 			select {
 			case <-t.ctx.Done():
+				// Stop any pending debounce timer so it does not fire after we exit.
+				if resizeTimer != nil {
+					resizeTimer.Stop()
+				}
 				return
 			case <-winchChan:
 				if resizeTimer != nil {

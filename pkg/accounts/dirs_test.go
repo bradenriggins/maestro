@@ -15,7 +15,7 @@ func TestEnsureConductorDirs(t *testing.T) {
 	err := EnsureConductorDirs()
 	assert.NoError(t, err)
 
-	base := filepath.Join(tmpDir, ".claude-conductor")
+	base := filepath.Join(tmpDir, ".maestro")
 	for _, dir := range RequiredDirs {
 		info, err := os.Stat(filepath.Join(base, dir))
 		assert.NoError(t, err, "directory %s should exist", dir)

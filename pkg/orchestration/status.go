@@ -25,7 +25,7 @@ func RunStatus(instanceFilter string) error {
 	// --- Workers section ---
 	fmt.Println("=== Workers ===")
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tACCOUNT\tSTATE\tTASK")
+	fmt.Fprintln(w, "NAME\tACCOUNT\tPROGRAM\tMODEL\tSTATE\tTASK")
 
 	names := sortedKeys(reg.Instances)
 	for _, name := range names {
@@ -41,12 +41,22 @@ func RunStatus(instanceFilter string) error {
 			state = ws.State
 		}
 
+		state = annotateStall(state, entry.LastOutputAt)
+
 		taskInfo := "-"
 		if ws != nil && ws.LastTask != "" {
 			taskInfo = truncateID(ws.LastTask)
 		}
 
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", name, entry.Account, state, taskInfo)
+		program := entry.Program
+		if program == "" {
+			program = "claude"
+		}
+		model := entry.Model
+		if model == "" {
+			model = "auto"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", name, entry.Account, program, model, state, taskInfo)
 	}
 	w.Flush()
 
@@ -98,7 +108,7 @@ func RunWorkers() error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tACCOUNT\tROLE\tSTATE\tWORKTREE")
+	fmt.Fprintln(w, "NAME\tACCOUNT\tPROGRAM\tMODEL\tROLE\tSTATE\tWORKTREE")
 
 	names := sortedKeys(reg.Instances)
 	for _, name := range names {
@@ -108,7 +118,18 @@ func RunWorkers() error {
 		if wsErr == nil {
 			state = ws.State
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", name, entry.Account, entry.Role, state, entry.WorktreePath)
+
+		state = annotateStall(state, entry.LastOutputAt)
+
+		program := entry.Program
+		if program == "" {
+			program = "claude"
+		}
+		model := entry.Model
+		if model == "" {
+			model = "auto"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", name, entry.Account, program, model, entry.Role, state, entry.WorktreePath)
 	}
 	w.Flush()
 
@@ -128,14 +149,15 @@ func RunTasks(statusFilter string) error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tSTATUS\tWORKER\tATTEMPTS\tPROMPT\tELAPSED")
+	fmt.Fprintln(w, "ID\tSTATUS\tWORKER\tATTEMPTS\tDEPS\tPROMPT\tELAPSED")
 
 	for _, t := range tasks {
 		desc := readPromptDescription(t.PromptFile)
 		elapsed := timeSince(t.CreatedAt)
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d/%d\t%s\t%s\n",
+		deps := formatDeps(t)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d/%d\t%s\t%s\t%s\n",
 			truncateID(t.ID), t.Status, t.WorkerInstance, t.Attempts, MaxAttempts,
-			truncate(desc, 40), elapsed)
+			deps, truncate(desc, 40), elapsed)
 	}
 	w.Flush()
 
@@ -152,18 +174,20 @@ func truncateID(id string) string {
 	return id[:9] + "..." + id[len(id)-4:]
 }
 
-// truncate shortens a string to maxLen, appending "..." if truncated.
+// truncate shortens a string to maxLen runes, appending "..." if truncated.
 func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
 	if maxLen <= 3 {
-		return s[:maxLen]
+		return string(runes[:maxLen])
 	}
-	return s[:maxLen-3] + "..."
+	return string(runes[:maxLen-3]) + "..."
 }
 
-// timeSince parses an ISO timestamp and returns a human-readable duration like "3m 12s".
+// timeSince parses an ISO timestamp and returns a human-readable duration.
+// Formats: "Xs" for under a minute, "Xm Ys" for under an hour, "Xh Ym" for an hour or more.
 func timeSince(isoTimestamp string) string {
 	t, err := time.Parse(time.RFC3339, isoTimestamp)
 	if err != nil {
@@ -173,8 +197,12 @@ func timeSince(isoTimestamp string) string {
 	if d < 0 {
 		d = 0
 	}
-	minutes := int(d.Minutes())
+	hours := int(d.Hours())
+	minutes := int(d.Minutes()) % 60
 	seconds := int(d.Seconds()) % 60
+	if hours > 0 {
+		return fmt.Sprintf("%dh%02dm", hours, minutes)
+	}
 	if minutes > 0 {
 		return fmt.Sprintf("%dm %ds", minutes, seconds)
 	}
@@ -189,7 +217,7 @@ func readPromptDescription(promptPath string) string {
 		return "(unreadable)"
 	}
 	content := string(data)
-	parts := strings.SplitN(content, "---\n", 2)
+	parts := strings.SplitN(content, "\n\n---\n\n", 2)
 	if len(parts) < 2 {
 		return "(no description)"
 	}
@@ -198,6 +226,35 @@ func readPromptDescription(promptPath string) string {
 		return "(empty)"
 	}
 	return firstLine
+}
+
+// formatDeps returns a human-readable summary of a task's dependencies.
+func formatDeps(t *Task) string {
+	if len(t.DependsOn) == 0 {
+		return "-"
+	}
+	if t.Status != StatusPending && t.Status != StatusBlocked {
+		return "-"
+	}
+	var ids []string
+	for _, id := range t.DependsOn {
+		ids = append(ids, truncateID(id))
+	}
+	return strings.Join(ids, ",")
+}
+
+// annotateStall appends a "(stalled Xm Ys)" suffix to state when the
+// worker's last output exceeds DefaultStallThreshold.
+func annotateStall(state string, lastOutputAt string) string {
+	if state != StateWorking || lastOutputAt == "" {
+		return state
+	}
+	if lastOut, parseErr := time.Parse(time.RFC3339, lastOutputAt); parseErr == nil {
+		if time.Since(lastOut) > DefaultStallThreshold {
+			return fmt.Sprintf("%s (stalled %s)", state, timeSince(lastOutputAt))
+		}
+	}
+	return state
 }
 
 // sortedKeys returns map keys sorted alphabetically.

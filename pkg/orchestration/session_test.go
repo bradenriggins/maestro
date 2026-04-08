@@ -14,14 +14,14 @@ func TestSessionState_SaveAndLoad(t *testing.T) {
 	t.Setenv("HOME", tmpDir)
 
 	// Create conductor dir
-	conductorDir := filepath.Join(tmpDir, ".claude-conductor")
+	conductorDir := filepath.Join(tmpDir, ".maestro")
 	os.MkdirAll(conductorDir, 0700)
 
 	state := &SessionState{
 		RepoPath:  "/tmp/test-repo",
 		StartedAt: NowISO(),
 		StashRef:  "stash@{0}",
-		StartTag:  "conductor/session-start/12345",
+		StartTag:  "maestro/session-start/12345",
 		Instances: []SessionInstance{
 			{Title: "plan", Account: "main", Branch: "main"},
 			{Title: "worker-1", Account: "w1", Branch: "feat/auth"},
@@ -44,7 +44,7 @@ func TestSessionState_SaveAndLoad(t *testing.T) {
 func TestSessionState_LoadNonexistent(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
-	os.MkdirAll(filepath.Join(tmpDir, ".claude-conductor"), 0700)
+	os.MkdirAll(filepath.Join(tmpDir, ".maestro"), 0700)
 
 	loaded, err := LoadSession()
 	assert.NoError(t, err)
@@ -54,7 +54,7 @@ func TestSessionState_LoadNonexistent(t *testing.T) {
 func TestDeleteSession(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
-	conductorDir := filepath.Join(tmpDir, ".claude-conductor")
+	conductorDir := filepath.Join(tmpDir, ".maestro")
 	os.MkdirAll(conductorDir, 0700)
 
 	// Create a session file

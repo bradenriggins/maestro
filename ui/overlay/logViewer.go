@@ -4,18 +4,21 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
-	"claude-conductor/pkg/accounts"
+	"maestro/pkg/accounts"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
-// LogViewerOverlay displays the last 50 lines of the conductor log file.
+// LogViewerOverlay displays the last 50 lines of the maestro log file.
 type LogViewerOverlay struct {
-	width   int
-	height  int
-	visible bool
+	width       int
+	height      int
+	visible     bool
+	lastRead    time.Time
+	cachedLines []string
 }
 
 // NewLogViewerOverlay creates a new LogViewerOverlay.
@@ -38,6 +41,45 @@ func (l *LogViewerOverlay) IsVisible() bool { return l.visible }
 // Close hides the overlay.
 func (l *LogViewerOverlay) Close() { l.visible = false }
 
+// NeedsRefresh reports whether the cached log lines are stale (older than 1 second).
+func (l *LogViewerOverlay) NeedsRefresh() bool {
+	return time.Since(l.lastRead) > 1*time.Second
+}
+
+// SetLines applies freshly-read log lines to the overlay. Must be called from
+// Update() on the BubbleTea main loop, not from a goroutine.
+func (l *LogViewerOverlay) SetLines(lines []string) {
+	l.cachedLines = lines
+	l.lastRead = time.Now()
+}
+
+// CollectLogLines reads the maestro log file and returns the last 50 lines.
+// It is a pure function that only reads external state and returns a value.
+// The caller must run it inside a tea.Cmd goroutine and apply the result via
+// SetLines() in Update().
+func CollectLogLines() []string {
+	// Primary log location: the temp directory where log.Initialize writes.
+	logPath := filepath.Join(os.TempDir(), "maestro.log")
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		// Fallback: check the maestro logs directory.
+		base, baseErr := accounts.ConductorDir()
+		if baseErr != nil {
+			return nil
+		}
+		data, err = os.ReadFile(filepath.Join(base, "logs", "maestro.log"))
+		if err != nil {
+			return nil
+		}
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	start := 0
+	if len(lines) > 50 {
+		start = len(lines) - 50
+	}
+	return lines[start:]
+}
+
 // HandleKeyPress processes a key press and returns true if the overlay should close.
 func (l *LogViewerOverlay) HandleKeyPress(msg tea.KeyMsg) (shouldClose bool) {
 	switch msg.String() {
@@ -47,35 +89,24 @@ func (l *LogViewerOverlay) HandleKeyPress(msg tea.KeyMsg) (shouldClose bool) {
 	return false
 }
 
-// Render returns the rendered log viewer overlay as a string.
+// Render returns the rendered log viewer overlay as a string. Render is
+// intentionally side-effect free and reads only from cachedLines.
 func (l *LogViewerOverlay) Render() string {
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("62"))
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	logStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Conductor Logs"))
+	b.WriteString(titleStyle.Render("Maestro Logs"))
 	b.WriteString(dimStyle.Render("  (last 50 lines)"))
 	b.WriteString("\n\n")
 
-	base, err := accounts.ConductorDir()
-	if err != nil {
-		b.WriteString(dimStyle.Render("  Error: " + err.Error()))
+	if len(l.cachedLines) == 0 {
+		b.WriteString(dimStyle.Render("  (no log file found)"))
 	} else {
-		logPath := filepath.Join(base, "logs", "conductor.log")
-		data, err := os.ReadFile(logPath)
-		if err != nil {
-			b.WriteString(dimStyle.Render("  (no log file found)"))
-		} else {
-			lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-			start := 0
-			if len(lines) > 50 {
-				start = len(lines) - 50
-			}
-			for _, line := range lines[start:] {
-				b.WriteString(logStyle.Render("  " + line))
-				b.WriteString("\n")
-			}
+		for _, line := range l.cachedLines {
+			b.WriteString(logStyle.Render("  " + line))
+			b.WriteString("\n")
 		}
 	}
 

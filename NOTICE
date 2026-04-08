@@ -1,0 +1,17 @@
+Maestro
+Copyright (c) 2026 Maestro Contributors
+
+This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
+See LICENSE.md for the full license text.
+
+---
+
+This project is based on Claude Squad (https://github.com/smtg-ai/claude-squad),
+Copyright (c) smtg-ai contributors, licensed under AGPL-3.0.
+
+Substantial modifications have been made including:
+- Multi-account credential management (separate `CLAUDE_CONFIG_DIR` / `CODEX_HOME` per account)
+- Usage tracking and routing (reads Claude Code `statusLine` data and Codex session JSONL files
+  to track each account's 5-hour rate limit usage, routes tasks to the account with the most headroom)
+- Model-aware task dispatch (selects the appropriate worker based on task type and model capability)
+- Codex CLI integration alongside Claude Code

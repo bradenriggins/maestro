@@ -16,15 +16,20 @@ func generateStatusLineScript(accountName string) (string, error) {
 	}
 
 	usageDir := filepath.Join(base, "usage")
-	os.MkdirAll(usageDir, 0700)
+	if err := os.MkdirAll(usageDir, 0700); err != nil {
+		return "", fmt.Errorf("failed to create usage dir: %w", err)
+	}
 
 	outputPath := filepath.Join(usageDir, accountName+".json")
 
-	// The script reads JSON from stdin, extracts rate_limits, and writes to file
+	// The script reads JSON from stdin, extracts rate_limits, and writes to file only if non-empty
 	script := fmt.Sprintf(`#!/bin/bash
-# Claude Conductor statusLine receiver for account: %s
+# Maestro statusLine receiver for account: %s
 # Receives JSON on stdin from Claude Code, extracts rate_limits, writes to usage file
-jq -c '.rate_limits // empty' | head -1 > "%s.tmp" 2>/dev/null && mv "%s.tmp" "%s" 2>/dev/null || true
+RESULT=$(jq -c '.rate_limits // empty' 2>/dev/null)
+if [ -n "$RESULT" ]; then
+    printf '%%s' "$RESULT" > "%s.tmp" && mv "%s.tmp" "%s"
+fi
 `, accountName, outputPath, outputPath, outputPath)
 
 	return script, nil
@@ -57,18 +62,29 @@ func generateStatusLineScriptFile(accountName string) (string, error) {
 
 // configureStatusLine writes the statusLine setting into an account's Claude Code settings.
 // It reads the existing settings.json (or creates one), adds/updates the statusLine field.
-func configureStatusLine(accountConfigDir, scriptPath string) error {
+// Only Claude supports statusLine; for other programs this is a no-op.
+func configureStatusLine(accountConfigDir, scriptPath, programName string) error {
+	// Only Claude supports statusLine
+	if programName != "" && programName != "claude" {
+		return nil
+	}
 	settingsPath := filepath.Join(accountConfigDir, "settings.json")
 
-	// Read existing settings or start fresh
+	// Read existing settings or start fresh.
+	// Surface unexpected read errors (e.g., permission denied) rather than
+	// silently discarding them and overwriting the file.
 	var settings map[string]interface{}
 	data, err := os.ReadFile(settingsPath)
 	if err == nil {
 		if jsonErr := json.Unmarshal(data, &settings); jsonErr != nil {
+			// File exists but is not valid JSON — reset to empty rather than
+			// propagating a parse error, matching prior behaviour intentionally.
 			settings = make(map[string]interface{})
 		}
-	} else {
+	} else if os.IsNotExist(err) {
 		settings = make(map[string]interface{})
+	} else {
+		return fmt.Errorf("failed to read existing settings.json: %w", err)
 	}
 
 	// Set the statusLine configuration
@@ -82,13 +98,17 @@ func configureStatusLine(accountConfigDir, scriptPath string) error {
 
 // atomicWriteJSON writes data as JSON to a file atomically (write tmp, then rename).
 func atomicWriteJSON(path string, data interface{}) error {
-	bytes, err := json.MarshalIndent(data, "", "  ")
+	encoded, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal JSON: %w", err)
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, bytes, 0600); err != nil {
+	if err := os.WriteFile(tmp, encoded, 0600); err != nil {
 		return fmt.Errorf("failed to write temp file: %w", err)
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp) // best-effort cleanup of the temp file
+		return fmt.Errorf("failed to finalize %s: %w", path, err)
+	}
+	return nil
 }

@@ -2,9 +2,11 @@ package orchestration
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 
-	"claude-conductor/pkg/accounts"
+	"maestro/log"
+	"maestro/pkg/accounts"
 )
 
 // LoadRegistry reads the registry from the default conductor directory.
@@ -17,10 +19,18 @@ func LoadRegistry() (*Registry, error) {
 }
 
 // LoadRegistryFromPath reads the registry from a specific path.
+// Returns an empty registry if the file is missing, empty, or contains corrupt JSON
+// so that callers never crash on first-run or after a truncated write.
 func LoadRegistryFromPath(path string) (*Registry, error) {
 	var reg Registry
 	if err := ReadJSONFile(path, &reg); err != nil {
-		return nil, fmt.Errorf("failed to read registry: %w", err)
+		if os.IsNotExist(err) {
+			return &Registry{Instances: make(map[string]RegistryEntry)}, nil
+		}
+		// Corrupt JSON (e.g. truncated mid-write): log a warning and return an
+		// empty registry rather than hard-failing every command that touches it.
+		log.WarningLog.Printf("registry: %s is corrupt, returning empty registry: %v", path, err)
+		return &Registry{Instances: make(map[string]RegistryEntry)}, nil
 	}
 	if reg.Instances == nil {
 		reg.Instances = make(map[string]RegistryEntry)

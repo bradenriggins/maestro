@@ -1,7 +1,7 @@
 package overlay
 
 import (
-	"claude-conductor/config"
+	"maestro/config"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -58,7 +58,11 @@ func (pp *ProfilePicker) HandleKeyPress(msg tea.KeyMsg) bool {
 }
 
 // GetSelectedProfile returns the currently selected profile.
+// Returns a zero-value config.Profile if the profiles slice is empty.
 func (pp *ProfilePicker) GetSelectedProfile() config.Profile {
+	if len(pp.profiles) == 0 {
+		return config.Profile{} // zero value — caller must handle empty Program field
+	}
 	if pp.cursor < 0 || pp.cursor >= len(pp.profiles) {
 		return pp.profiles[0]
 	}

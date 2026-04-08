@@ -5,7 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"claude-conductor/pkg/accounts"
+	"maestro/log"
+	"maestro/pkg/accounts"
 )
 
 // SessionState represents the persisted session state for auto-resume.
@@ -20,23 +21,29 @@ type SessionState struct {
 
 // SessionInstance is a lightweight record of an instance for resume.
 type SessionInstance struct {
-	Title   string `json:"title"`
-	Account string `json:"account"`
-	Branch  string `json:"branch"`
+	Title   string            `json:"title"`
+	Account string            `json:"account"`
+	Branch  string            `json:"branch"`
+	Env     map[string]string `json:"env,omitempty"`
 }
 
-// SaveSession writes session state to ~/.claude-conductor/session.json.
+// SaveSession writes session state to ~/.maestro/session.json.
+// Creates the maestro directory if it does not already exist (first-run safety).
 func SaveSession(state *SessionState) error {
 	state.LastSavedAt = NowISO()
 	base, err := accounts.ConductorDir()
 	if err != nil {
 		return err
 	}
+	if mkErr := os.MkdirAll(base, 0700); mkErr != nil {
+		return fmt.Errorf("failed to create maestro dir: %w", mkErr)
+	}
 	path := filepath.Join(base, "session.json")
 	return AtomicWriteJSON(path, state)
 }
 
-// LoadSession reads session state. Returns nil, nil if no session file exists.
+// LoadSession reads session state. Returns nil, nil if no session file exists or is empty.
+// Returns nil, nil if the file is corrupt (logs a warning).
 func LoadSession() (*SessionState, error) {
 	base, err := accounts.ConductorDir()
 	if err != nil {
@@ -48,7 +55,8 @@ func LoadSession() (*SessionState, error) {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("failed to read session: %w", err)
+		log.WarningLog.Printf("session: %s is corrupt, ignoring: %v", path, err)
+		return nil, nil
 	}
 	return &state, nil
 }

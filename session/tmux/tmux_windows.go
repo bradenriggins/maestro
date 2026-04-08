@@ -3,7 +3,7 @@
 package tmux
 
 import (
-	"claude-conductor/log"
+	"maestro/log"
 	"os"
 	"time"
 
@@ -29,15 +29,13 @@ func (t *TmuxSession) monitorWindowSize() {
 
 	// On Windows, we'll just periodically check for window size changes
 	// since SIGWINCH is not available
-	ticker := time.NewTicker(250 * time.Millisecond)
-	defer ticker.Stop()
-
-	var lastCols, lastRows int
-	lastCols, lastRows, _ = term.GetSize(int(os.Stdin.Fd()))
+	lastCols, lastRows, _ := term.GetSize(int(os.Stdin.Fd()))
 
 	t.wg.Add(1)
 	go func() {
 		defer t.wg.Done()
+		ticker := time.NewTicker(250 * time.Millisecond)
+		defer ticker.Stop()
 		for {
 			select {
 			case <-t.ctx.Done():

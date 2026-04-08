@@ -50,6 +50,7 @@ func getModifiedFiles(worktreePath string) []string {
 	stagedCmd := exec.Command("git", "-C", worktreePath, "diff", "--name-only", "--cached")
 	stagedOut, err := stagedCmd.Output()
 	if err == nil {
+		out = append(out, '\n')
 		out = append(out, stagedOut...)
 	}
 

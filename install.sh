@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -e
+set -euo pipefail
 
 setup_shell_and_path() {
     BIN_DIR=${BIN_DIR:-$HOME/.local/bin}
@@ -24,7 +24,8 @@ setup_shell_and_path() {
     esac
 
     if [[ ":$PATH:" != *":${BIN_DIR}:"* ]]; then
-        echo >> "$PROFILE" && echo "export PATH=\"\$PATH:$BIN_DIR\"" >> "$PROFILE"
+        : >> "$PROFILE"
+        printf 'export PATH="$PATH:%s"\n' "$BIN_DIR" >> "$PROFILE"
     fi
 }
 
@@ -58,26 +59,25 @@ detect_platform_and_arch() {
 }
 
 get_latest_version() {
-    # Get latest version from GitHub API, including prereleases
-    API_RESPONSE=$(curl -sS "https://api.github.com/repos/smtg-ai/claude-squad/releases")
-    if [ $? -ne 0 ]; then
-        echo "Failed to connect to GitHub API"
+    local response
+    if ! response=$(curl -fsSL "https://api.github.com/repos/bradenmweight/maestro/releases/latest"); then
+        echo "Failed to fetch the latest release from GitHub"
         exit 1
     fi
-    
-    if echo "$API_RESPONSE" | grep -q "Not Found"; then
-        echo "No releases found in the repository"
+
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "jq is required to parse the GitHub release response"
         exit 1
     fi
-    
-    # Get the first release (latest) from the array
-    LATEST_VERSION=$(echo "$API_RESPONSE" | grep -m1 '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | sed 's/^v//')
-    if [ -z "$LATEST_VERSION" ]; then
-        echo "Failed to parse version from GitHub API response:"
-        echo "$API_RESPONSE" | grep -v "upload_url" # Filter out long upload_url line
+
+    local latest_version
+    latest_version=$(printf '%s' "$response" | jq -r '.tag_name | sub("^v"; "")')
+    if [[ -z "$latest_version" || "$latest_version" == "null" ]]; then
+        echo "Failed to parse version from GitHub API response"
         exit 1
     fi
-    echo "$LATEST_VERSION"
+
+    printf '%s\n' "$latest_version"
 }
 
 download_release() {
@@ -87,10 +87,7 @@ download_release() {
     local tmp_dir=$4
 
     echo "Downloading binary from $binary_url"
-    DOWNLOAD_OUTPUT=$(curl -sS -L -f -w '%{http_code}' "$binary_url" -o "${tmp_dir}/${archive_name}" 2>&1)
-    HTTP_CODE=$?
-    
-    if [ $HTTP_CODE -ne 0 ]; then
+    if ! curl -fsSL -L "$binary_url" -o "${tmp_dir}/${archive_name}"; then
         echo "Error: Failed to download release asset"
         echo "This could be because:"
         echo "1. The release ${version} doesn't have assets uploaded yet"
@@ -99,11 +96,12 @@ download_release() {
         echo ""
         echo "Expected asset name: ${archive_name}"
         echo "URL attempted: ${binary_url}"
-        if [ "$version" == "latest" ]; then
+        if [ "$version" = "latest" ]; then
             echo ""
             echo "Tip: Try installing a specific version instead of 'latest'"
             echo "Available versions:"
-            echo "$API_RESPONSE" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | sed 's/^v//'
+            curl -fsSL "https://api.github.com/repos/bradenmweight/maestro/releases" \
+              | jq -r '.[].tag_name | sub("^v"; "")' || true
         fi
         rm -rf "$tmp_dir"
         exit 1
@@ -143,7 +141,7 @@ extract_and_install() {
     fi
 
     # Install binary with desired name
-    mv "${tmp_dir}/claude-squad${extension}" "$bin_dir/$INSTALL_NAME${extension}"
+    mv "${tmp_dir}/maestro${extension}" "$bin_dir/$INSTALL_NAME${extension}"
     rm -rf "$tmp_dir"
 
     if [ ! -f "$bin_dir/$INSTALL_NAME${extension}" ]; then
@@ -163,8 +161,8 @@ extract_and_install() {
 }
 
 check_command_exists() {
-    if command -v "$INSTALL_NAME" &> /dev/null; then
-        EXISTING_PATH=$(which "$INSTALL_NAME")
+    if command -v "$INSTALL_NAME" >/dev/null 2>&1; then
+        EXISTING_PATH=$(command -v "$INSTALL_NAME")
         echo "Found existing installation of '$INSTALL_NAME' at $EXISTING_PATH"
         echo "Will upgrade to the latest version"
         UPGRADE_MODE=true
@@ -267,7 +265,7 @@ check_and_install_dependencies() {
 
 main() {
     # Parse command line arguments
-    INSTALL_NAME="cs"
+    INSTALL_NAME="maestro"
     UPGRADE_MODE=false
     
     while [[ $# -gt 0 ]]; do
@@ -296,10 +294,11 @@ main() {
         VERSION=$(get_latest_version)
     fi
 
-    RELEASE_URL="https://github.com/smtg-ai/claude-squad/releases/download/v${VERSION}"
-    ARCHIVE_NAME="claude-squad_${VERSION}_${PLATFORM}_${ARCHITECTURE}${ARCHIVE_EXT}"
+    RELEASE_URL="https://github.com/bradenmweight/maestro/releases/download/v${VERSION}"
+    ARCHIVE_NAME="maestro_${VERSION}_${PLATFORM}_${ARCHITECTURE}${ARCHIVE_EXT}"
     BINARY_URL="${RELEASE_URL}/${ARCHIVE_NAME}"
     TMP_DIR=$(mktemp -d)
+    trap 'rm -rf "$TMP_DIR"' EXIT
     
     download_release "$VERSION" "$BINARY_URL" "$ARCHIVE_NAME" "$TMP_DIR"
     extract_and_install "$TMP_DIR" "$ARCHIVE_NAME" "$BIN_DIR" "$EXTENSION"

@@ -1,9 +1,10 @@
 package session
 
 import (
-	"claude-conductor/log"
-	"claude-conductor/session/git"
-	"claude-conductor/session/tmux"
+	"errors"
+	"maestro/log"
+	"maestro/session/git"
+	"maestro/session/tmux"
 	"path/filepath"
 
 	"fmt"
@@ -39,6 +40,8 @@ type Instance struct {
 	Status Status
 	// Program is the program to run in the instance.
 	Program string
+	// Model is the model identifier for this instance (e.g., "sonnet-4.6").
+	Model string
 	// Height is the height of the instance.
 	Height int
 	// Width is the width of the instance.
@@ -85,6 +88,7 @@ func (i *Instance) ToInstanceData() InstanceData {
 		CreatedAt: i.CreatedAt,
 		UpdatedAt: time.Now(),
 		Program:   i.Program,
+		Model:     i.Model,
 		AutoYes:   i.AutoYes,
 		Account:   i.Account,
 		Role:      i.Role,
@@ -127,6 +131,7 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 		CreatedAt: data.CreatedAt,
 		UpdatedAt: data.UpdatedAt,
 		Program:   data.Program,
+		Model:     data.Model,
 		Account:   data.Account,
 		Role:      data.Role,
 		Env:       data.Env,
@@ -138,11 +143,17 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 			data.Worktree.BaseCommitSHA,
 			data.Worktree.IsExistingBranch,
 		),
-		diffStats: &git.DiffStats{
+	}
+
+	// Only restore diff stats when there is actual content to restore.
+	// A zero-value DiffStatsData (Added=0, Removed=0, Content="") should remain nil
+	// so callers that check `diffStats != nil` correctly treat it as "no stats yet".
+	if data.DiffStats.Added != 0 || data.DiffStats.Removed != 0 || data.DiffStats.Content != "" {
+		instance.diffStats = &git.DiffStats{
 			Added:   data.DiffStats.Added,
 			Removed: data.DiffStats.Removed,
 			Content: data.DiffStats.Content,
-		},
+		}
 	}
 
 	if instance.Paused() {
@@ -173,6 +184,8 @@ type InstanceOptions struct {
 	Account string
 	// Role is "orchestrator" or "worker".
 	Role string
+	// Model is the model identifier for this instance.
+	Model string
 	// Env contains environment variables to inject into the tmux session.
 	Env map[string]string
 }
@@ -191,6 +204,7 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 		Status:         Ready,
 		Path:           absPath,
 		Program:        opts.Program,
+		Model:          opts.Model,
 		Height:         0,
 		Width:          0,
 		CreatedAt:      t,
@@ -258,7 +272,7 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 	defer func() {
 		if setupErr != nil {
 			if cleanupErr := i.Kill(); cleanupErr != nil {
-				setupErr = fmt.Errorf("%v (cleanup error: %v)", setupErr, cleanupErr)
+				setupErr = fmt.Errorf("%w (cleanup error: %v)", setupErr, cleanupErr)
 			}
 		} else {
 			i.started = true
@@ -266,10 +280,21 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 	}()
 
 	if !firstTimeSetup {
-		// Reuse existing session
+		// Reuse existing session if it is alive, otherwise re-create it.
+		// This handles the case where the tmux server was killed (reboot, tmux kill-server)
+		// while conductor state was persisted — the same recovery pattern used by Resume().
 		if err := tmuxSession.Restore(); err != nil {
-			setupErr = fmt.Errorf("failed to restore existing session: %w", err)
-			return setupErr
+			log.ErrorLog.Printf("failed to restore existing session %q: %v — attempting to create new session", i.Title, err)
+			var startErr error
+			if len(i.Env) > 0 {
+				startErr = i.tmuxSession.StartWithEnv(i.gitWorktree.GetWorktreePath(), i.Env)
+			} else {
+				startErr = i.tmuxSession.Start(i.gitWorktree.GetWorktreePath())
+			}
+			if startErr != nil {
+				setupErr = fmt.Errorf("failed to restore or recreate session: restore error: %v; recreate error: %w", err, startErr)
+				return setupErr
+			}
 		}
 	} else {
 		// Setup git worktree first
@@ -277,6 +302,8 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 			setupErr = fmt.Errorf("failed to setup git worktree: %w", err)
 			return setupErr
 		}
+		// Sync branch name in case setupNewWorktree renamed it to avoid conflicts.
+		i.Branch = i.gitWorktree.GetBranchName()
 
 		// Create new session
 		var startErr error
@@ -288,7 +315,7 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 		if startErr != nil {
 			// Cleanup git worktree if tmux session creation fails
 			if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
-				startErr = fmt.Errorf("%v (cleanup error: %v)", startErr, cleanupErr)
+				startErr = fmt.Errorf("%w (cleanup error: %v)", startErr, cleanupErr)
 			}
 			setupErr = fmt.Errorf("failed to start new session: %w", startErr)
 			return setupErr
@@ -340,7 +367,7 @@ func (i *Instance) combineErrors(errs []error) error {
 	for _, err := range errs {
 		errMsg += "\n  - " + err.Error()
 	}
-	return fmt.Errorf("%s", errMsg)
+	return errors.New(errMsg)
 }
 
 func (i *Instance) Preview() (string, error) {
@@ -432,6 +459,9 @@ func (i *Instance) Paused() bool {
 
 // TmuxAlive returns true if the tmux session is alive. This is a sanity check before attaching.
 func (i *Instance) TmuxAlive() bool {
+	if i.tmuxSession == nil {
+		return false
+	}
 	return i.tmuxSession.DoesSessionExist()
 }
 
@@ -452,7 +482,7 @@ func (i *Instance) Pause() error {
 		log.ErrorLog.Print(err)
 	} else if dirty {
 		// Commit changes locally (without pushing to GitHub)
-		commitMsg := fmt.Sprintf("[conductor] update from '%s' on %s (paused)", i.Title, time.Now().Format(time.RFC822))
+		commitMsg := fmt.Sprintf("[maestro] update from '%s' on %s (paused)", i.Title, time.Now().Format(time.RFC822))
 		if err := i.gitWorktree.CommitChanges(commitMsg); err != nil {
 			errs = append(errs, fmt.Errorf("failed to commit changes: %w", err))
 			log.ErrorLog.Print(err)
@@ -491,7 +521,10 @@ func (i *Instance) Pause() error {
 	}
 
 	i.SetStatus(Paused)
-	_ = clipboard.WriteAll(i.gitWorktree.GetBranchName())
+	if err := clipboard.WriteAll(i.gitWorktree.GetBranchName()); err != nil {
+		// Non-fatal: clipboard may not be available in headless environments.
+		log.ErrorLog.Printf("failed to copy branch name to clipboard: %v", err)
+	}
 	return nil
 }
 
@@ -520,25 +553,15 @@ func (i *Instance) Resume() error {
 
 	// Check if tmux session still exists from pause, otherwise create new one
 	if i.tmuxSession.DoesSessionExist() {
-		// Session exists, just restore PTY connection to it
+		// Session exists, just restore PTY connection to it.
+		// Do not fall back to Start/StartWithEnv here — the session is live and
+		// Start() would fail with "session already exists".
 		if err := i.tmuxSession.Restore(); err != nil {
 			log.ErrorLog.Print(err)
-			// If restore fails, fall back to creating new session
-			var startErr error
-			if len(i.Env) > 0 {
-				startErr = i.tmuxSession.StartWithEnv(i.gitWorktree.GetWorktreePath(), i.Env)
-			} else {
-				startErr = i.tmuxSession.Start(i.gitWorktree.GetWorktreePath())
+			if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
+				log.ErrorLog.Print(cleanupErr)
 			}
-			if startErr != nil {
-				log.ErrorLog.Print(startErr)
-				// Cleanup git worktree if tmux session creation fails
-				if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
-					startErr = fmt.Errorf("%v (cleanup error: %v)", startErr, cleanupErr)
-					log.ErrorLog.Print(startErr)
-				}
-				return fmt.Errorf("failed to start new session: %w", startErr)
-			}
+			return fmt.Errorf("failed to restore existing tmux session: %w", err)
 		}
 	} else {
 		// Create new tmux session
@@ -552,7 +575,7 @@ func (i *Instance) Resume() error {
 			log.ErrorLog.Print(startErr)
 			// Cleanup git worktree if tmux session creation fails
 			if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
-				startErr = fmt.Errorf("%v (cleanup error: %v)", startErr, cleanupErr)
+				startErr = fmt.Errorf("%w (cleanup error: %v)", startErr, cleanupErr)
 				log.ErrorLog.Print(startErr)
 			}
 			return fmt.Errorf("failed to start new session: %w", startErr)
@@ -609,7 +632,10 @@ func (i *Instance) GetDiffStats() *git.DiffStats {
 	return i.diffStats
 }
 
-// SendPrompt sends a prompt to the tmux session
+// SendPrompt sends a prompt to the tmux session.
+// The caller is responsible for any delay needed before calling this
+// (e.g. to let Claude Code start up). This method must not sleep so
+// it is safe to call from a tea.Cmd goroutine.
 func (i *Instance) SendPrompt(prompt string) error {
 	if !i.started {
 		return fmt.Errorf("instance not started")
@@ -620,9 +646,6 @@ func (i *Instance) SendPrompt(prompt string) error {
 	if err := i.tmuxSession.SendKeys(prompt); err != nil {
 		return fmt.Errorf("error sending keys to tmux session: %w", err)
 	}
-
-	// Brief pause to prevent carriage return from being interpreted as newline
-	time.Sleep(100 * time.Millisecond)
 	if err := i.tmuxSession.TapEnter(); err != nil {
 		return fmt.Errorf("error tapping enter: %w", err)
 	}

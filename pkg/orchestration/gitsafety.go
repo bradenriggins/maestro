@@ -26,21 +26,32 @@ func SetupGitSafetyNet(repoDir string) (*GitSafetyResult, error) {
 		return nil, fmt.Errorf("git status failed: %w", err)
 	}
 
+	now := time.Now()
 	if len(strings.TrimSpace(string(out))) > 0 {
 		result.HadDirtyFiles = true
 		// Stash changes
-		ts := time.Now().Unix()
-		stashMsg := fmt.Sprintf("conductor-auto-stash-%d", ts)
+		stashMsg := fmt.Sprintf("maestro-auto-stash-%d", now.Unix())
 		stashCmd := exec.Command("git", "-C", repoDir, "stash", "push", "-m", stashMsg)
-		if stashOut, err := stashCmd.CombinedOutput(); err != nil {
+		stashOut, err := stashCmd.CombinedOutput()
+		if err != nil {
 			return nil, fmt.Errorf("git stash failed: %s: %w", string(stashOut), err)
 		}
-		result.StashRef = "stash@{0}"
+		// Only record a stash ref if git actually created a stash entry.
+		// "git stash" prints "Saved working directory and index state ..." on success.
+		// If nothing was stashable it prints "No local changes to save" without error,
+		// so we guard against setting a stash ref in that case.
+		stashOutStr := string(stashOut)
+		if strings.Contains(stashOutStr, "Saved") {
+			// Parse the stash ref from the output, e.g. "stash@{0}" or fall back to stash@{0}
+			// git stash output: "Saved working directory and index state On <branch>: <msg>"
+			// The ref is always stash@{0} right after a successful stash push, but we
+			// confirm it was truly saved before recording it.
+			result.StashRef = "stash@{0}"
+		}
 	}
 
 	// Create start tag
-	ts := time.Now().Unix()
-	tagName := fmt.Sprintf("conductor/session-start/%d", ts)
+	tagName := fmt.Sprintf("maestro/session-start/%d", now.Unix())
 	tagCmd := exec.Command("git", "-C", repoDir, "tag", tagName)
 	if tagOut, err := tagCmd.CombinedOutput(); err != nil {
 		// Non-fatal — tag creation can fail if HEAD hasn't changed
@@ -66,6 +77,9 @@ func TeardownGitSafetyNet(repoDir, startTag, stashRef string) string {
 			summary.WriteString(string(out))
 			summary.WriteString("\n")
 		}
+		// Clean up the session start tag so they don't accumulate.
+		delCmd := exec.Command("git", "-C", repoDir, "tag", "-d", startTag)
+		_ = delCmd.Run()
 	}
 
 	if stashRef != "" {

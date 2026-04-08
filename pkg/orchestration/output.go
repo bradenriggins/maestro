@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"claude-conductor/pkg/accounts"
+	"maestro/pkg/accounts"
 )
 
 var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
@@ -56,7 +56,7 @@ func RunRecall(instanceName string) error {
 	// Save to captures directory
 	base, err := accounts.ConductorDir()
 	if err != nil {
-		return fmt.Errorf("failed to resolve conductor dir: %w", err)
+		return fmt.Errorf("failed to resolve maestro dir: %w", err)
 	}
 	capturesDir := filepath.Join(base, "captures")
 	if err := os.MkdirAll(capturesDir, 0700); err != nil {
@@ -65,7 +65,7 @@ func RunRecall(instanceName string) error {
 
 	filename := fmt.Sprintf("%s-%d.txt", instanceName, time.Now().Unix())
 	capturePath := filepath.Join(capturesDir, filename)
-	if err := os.WriteFile(capturePath, []byte(cleaned), 0600); err != nil {
+	if err := AtomicWritePrompt(capturePath, []byte(cleaned)); err != nil {
 		return fmt.Errorf("failed to write capture file: %w", err)
 	}
 
@@ -77,7 +77,7 @@ func RunRecall(instanceName string) error {
 }
 
 // resolveAndValidateInstance loads the registry, checks the instance exists,
-// and validates the conductor session prefix.
+// and validates the maestro session prefix.
 func resolveAndValidateInstance(instanceName string) (*RegistryEntry, error) {
 	reg, err := LoadRegistry()
 	if err != nil {
@@ -91,6 +91,13 @@ func resolveAndValidateInstance(instanceName string) (*RegistryEntry, error) {
 
 	if !strings.HasPrefix(entry.TmuxSession, conductorSessionPrefix) {
 		return nil, fmt.Errorf("tmux session %q does not have required prefix %q", entry.TmuxSession, conductorSessionPrefix)
+	}
+
+	if !TmuxHasSession(entry.TmuxSession) {
+		return nil, &DispatchError{
+			Code: 2,
+			Msg:  fmt.Sprintf("tmux session %q is not running (instance may be dead or paused)", entry.TmuxSession),
+		}
 	}
 
 	return entry, nil
