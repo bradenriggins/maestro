@@ -16,48 +16,6 @@ import (
 const readyIcon = "● "
 const pausedIcon = "⏸ "
 
-var readyStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.AdaptiveColor{Light: "#51bd73", Dark: "#51bd73"})
-
-var addedLinesStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.AdaptiveColor{Light: "#51bd73", Dark: "#51bd73"})
-
-var removedLinesStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.Color("#de613e"))
-
-var pausedStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#888888"})
-
-var titleStyle = lipgloss.NewStyle().
-	Padding(1, 1, 0, 1).
-	Foreground(lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#dddddd"})
-
-var listDescStyle = lipgloss.NewStyle().
-	Padding(0, 1, 1, 1).
-	Foreground(lipgloss.AdaptiveColor{Light: "#A49FA5", Dark: "#777777"})
-
-var selectedTitleStyle = lipgloss.NewStyle().
-	Padding(1, 1, 0, 1).
-	Background(lipgloss.Color("#dde4f0")).
-	Foreground(lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#1a1a1a"})
-
-var selectedDescStyle = lipgloss.NewStyle().
-	Padding(0, 1, 1, 1).
-	Background(lipgloss.Color("#dde4f0")).
-	Foreground(lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#1a1a1a"})
-
-var mainTitle = lipgloss.NewStyle().
-	Background(lipgloss.Color("62")).
-	Foreground(lipgloss.Color("230"))
-
-var autoYesStyle = lipgloss.NewStyle().
-	Background(lipgloss.Color("#dde4f0")).
-	Foreground(lipgloss.Color("#1a1a1a"))
-
-var accountBadgeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-
-var orchStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
-
 type List struct {
 	items         []*session.Instance
 	selectedIdx   int
@@ -174,17 +132,21 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 
 	// Cut the title if it's too long
 	titleText := i.Title
-	widthAvail := r.width - 3 - runewidth.StringWidth(prefix) - 1 - rolePrefixWidth - badgeWidth - modelBadgeWidth
+	contentWidth := clampDimension(r.width - titleS.GetHorizontalFrameSize())
+	statusWidth := lipgloss.Width(join)
+	widthAvail := contentWidth - statusWidth - runewidth.StringWidth(prefix) - rolePrefixWidth - badgeWidth - modelBadgeWidth
 	if widthAvail > 0 && runewidth.StringWidth(titleText) > widthAvail {
 		titleText = runewidth.Truncate(titleText, widthAvail-3, "...")
 	}
 	titleInner := fmt.Sprintf("%s %s%s", prefix, rolePrefix, titleText)
-	title := titleS.Render(lipgloss.JoinHorizontal(
-		lipgloss.Left,
-		lipgloss.Place(r.width-3, 1, lipgloss.Left, lipgloss.Center, titleInner+badge+modelBadge),
-		" ",
-		join,
-	))
+	title := titleS.Render(lipgloss.Place(
+		contentWidth, 1,
+		lipgloss.Left, lipgloss.Center,
+		lipgloss.JoinHorizontal(
+			lipgloss.Left,
+			lipgloss.Place(clampDimension(contentWidth-statusWidth), 1, lipgloss.Left, lipgloss.Center, titleInner+badge+modelBadge),
+			join,
+		)))
 
 	stat := i.GetDiffStats()
 
@@ -206,7 +168,7 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 		)
 	}
 
-	remainingWidth := r.width
+	remainingWidth := contentWidth
 	remainingWidth -= runewidth.StringWidth(prefix)
 	remainingWidth -= runewidth.StringWidth(branchIcon)
 	remainingWidth -= 2 // for the literal " " and "-" in the branchLine format string
@@ -254,10 +216,10 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 	text := lipgloss.JoinVertical(
 		lipgloss.Left,
 		title,
-		descS.Render(branchLine),
+		descS.Render(lipgloss.Place(contentWidth, 1, lipgloss.Left, lipgloss.Center, branchLine)),
 	)
 
-	return text
+	return lipgloss.Place(r.width, lipgloss.Height(text), lipgloss.Left, lipgloss.Top, text)
 }
 
 func (l *List) String() string {
@@ -270,8 +232,7 @@ func (l *List) String() string {
 	b.WriteString("\n")
 
 	// Write title line
-	// add padding of 2 because the border on list items adds some extra characters
-	titleWidth := AdjustPreviewWidth(l.width) + 2
+	titleWidth := l.width
 	if !l.autoyes {
 		b.WriteString(lipgloss.Place(
 			titleWidth, 1, lipgloss.Left, lipgloss.Bottom, mainTitle.Render(titleText)))
@@ -288,7 +249,7 @@ func (l *List) String() string {
 
 	// Show legend above instance list (only when there are items to display).
 	if len(l.items) > 0 {
-		legend := lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("★ orchestrator  · worker  (model shown after account)")
+		legend := lipgloss.NewStyle().Foreground(mutedTextColor).Render("★ orchestrator  · worker  (model shown after account)")
 		b.WriteString("  ")
 		b.WriteString(legend)
 	}

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/stretchr/testify/require"
 )
 
@@ -372,4 +373,18 @@ func TestTerminalCloseForInstance(t *testing.T) {
 	tp.mu.Lock()
 	require.Len(t, tp.sessions, 1, "non-existent close should not affect existing sessions")
 	tp.mu.Unlock()
+}
+
+func TestTerminalFallbackFitsViewport(t *testing.T) {
+	tp := NewTerminalPane()
+	tp.SetSize(40, 4)
+
+	tp.mu.Lock()
+	tp.setFallbackState("Waiting for terminal...")
+	tp.mu.Unlock()
+
+	rendered := tp.String()
+
+	require.Equal(t, 40, lipgloss.Width(rendered))
+	require.Equal(t, 4, lipgloss.Height(rendered))
 }
