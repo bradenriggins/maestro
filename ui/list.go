@@ -113,7 +113,7 @@ type InstanceRenderer struct {
 }
 
 func (r *InstanceRenderer) setWidth(width int) {
-	r.width = AdjustPreviewWidth(width)
+	r.width = width
 }
 
 // ɹ and ɻ are other options.
@@ -269,9 +269,8 @@ func (l *List) String() string {
 	b.WriteString("\n")
 	b.WriteString("\n")
 
-	// Write title line
-	// add padding of 2 because the border on list items adds some extra characters
-	titleWidth := AdjustPreviewWidth(l.width) + 2
+	// Write title line across the full list width.
+	titleWidth := l.width
 	if !l.autoyes {
 		b.WriteString(lipgloss.Place(
 			titleWidth, 1, lipgloss.Left, lipgloss.Bottom, mainTitle.Render(titleText)))

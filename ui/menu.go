@@ -7,6 +7,7 @@ import (
 	"maestro/session"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 )
 
 var keyStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{
@@ -153,6 +154,18 @@ func (m *Menu) addInstanceOptions() {
 	m.options = options
 }
 
+func (m *Menu) compactOptions() string {
+	var s strings.Builder
+	for i, k := range m.options {
+		binding := keys.GlobalKeyBindings[k]
+		s.WriteString(binding.Help().Key)
+		if i != len(m.options)-1 {
+			s.WriteString(" • ")
+		}
+	}
+	return s.String()
+}
+
 // SetSize sets the width of the window. The menu will be centered horizontally within this width.
 func (m *Menu) SetSize(width, height int) {
 	m.width = width
@@ -234,5 +247,16 @@ func (m *Menu) String() string {
 	}
 
 	centeredMenuText := menuStyle.Render(s.String())
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, centeredMenuText)
+	if lipgloss.Width(centeredMenuText) > m.width {
+		compact := m.compactOptions()
+		if runewidth.StringWidth(compact) > m.width {
+			if m.width <= 3 {
+				compact = runewidth.Truncate(compact, m.width, "")
+			} else {
+				compact = runewidth.Truncate(compact, m.width-3, "...")
+			}
+		}
+		centeredMenuText = menuStyle.Render(compact)
+	}
+	return placeCentered(m.width, m.height, centeredMenuText)
 }

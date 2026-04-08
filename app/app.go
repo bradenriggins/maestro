@@ -246,35 +246,23 @@ func newHome(ctx context.Context, program string, autoYes bool, fresh bool, noSa
 // updateHandleWindowSizeEvent sets the sizes of the components.
 // The components will try to render inside their bounds.
 func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
-	// List takes 30% of width, preview takes 70%
-	listWidth := int(float32(msg.Width) * 0.3)
-	tabsWidth := msg.Width - listWidth
+	m.windowWidth = msg.Width
+	m.windowHeight = msg.Height
 
-	// Menu takes 10% of height, list and window take 90%
-	contentHeight := int(float32(msg.Height) * 0.9)
-	menuHeight := msg.Height - contentHeight - 1 // minus 1 for error box
-	if menuHeight < 0 {
-		menuHeight = 0
-	}
-	m.errBox.SetSize(int(float32(msg.Width)*0.9), 1) // error box takes 1 row
+	layout := m.currentLayout()
+	listWidth, tabsWidth := splitContentWidth(layout.content.W)
 
-	m.tabbedWindow.SetSize(tabsWidth, contentHeight)
-	m.list.SetSize(listWidth, contentHeight)
+	m.tabbedWindow.SetSize(tabsWidth, layout.content.H)
+	m.list.SetSize(listWidth, layout.content.H)
 
-	if m.textInputOverlay != nil {
-		m.textInputOverlay.SetSize(int(float32(msg.Width)*0.6), int(float32(msg.Height)*0.4))
-	}
-	if m.textOverlay != nil {
-		m.textOverlay.SetWidth(int(float32(msg.Width) * 0.6))
-	}
+	m.sizeOverlays()
 
 	previewWidth, previewHeight := m.tabbedWindow.GetPreviewSize()
 	if err := m.list.SetSessionPreviewSize(previewWidth, previewHeight); err != nil {
 		log.ErrorLog.Print(err)
 	}
-	m.menu.SetSize(msg.Width, menuHeight)
-	m.windowWidth = msg.Width
-	m.windowHeight = msg.Height
+	m.menu.SetSize(layout.menu.W, layout.menu.H)
+	m.errBox.SetSize(layout.err.W, layout.err.H)
 
 	if m.orchestrationOverlay != nil {
 		m.orchestrationOverlay.SetSize(msg.Width, msg.Height)
@@ -283,7 +271,7 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 		m.logViewerOverlay.SetSize(msg.Width, msg.Height)
 	}
 	if m.statusBar != nil {
-		m.statusBar.SetWidth(msg.Width)
+		m.statusBar.SetWidth(layout.status.W)
 	}
 }
 
@@ -1365,7 +1353,9 @@ func (m *home) handleError(err error) tea.Cmd {
 }
 
 func (m *home) newPromptOverlay() *overlay.TextInputOverlay {
-	return overlay.NewTextInputOverlayWithBranchPicker("Enter prompt", "", m.appConfig.GetProfiles())
+	ti := overlay.NewTextInputOverlayWithBranchPicker("Enter prompt", "", m.appConfig.GetProfiles())
+	ti.SetViewport(m.windowWidth, m.windowHeight)
+	return ti
 }
 
 // cancelPromptOverlay cancels the prompt overlay, cleaning up unstarted instances.
@@ -1393,7 +1383,7 @@ func (m *home) confirmAction(message string, action tea.Cmd) tea.Cmd {
 	// Create and show the confirmation overlay using ConfirmationOverlay
 	m.confirmationOverlay = overlay.NewConfirmationOverlay(message)
 	// Set a fixed width for consistent appearance
-	m.confirmationOverlay.SetWidth(50)
+	m.sizeOverlays()
 
 	return nil
 }
@@ -1424,24 +1414,21 @@ func (m *home) handleBulkRetry() (tea.Model, tea.Cmd) {
 }
 
 func (m *home) View() string {
-	// Empty-state welcome screen: when no instances exist and no overlay is active,
-	// show a centered guidance message instead of a blank list.
+	layout := m.currentLayout()
+	listWidth, tabsWidth := splitContentWidth(layout.content.W)
+
+	var content string
 	if m.list.NumInstances() == 0 && m.state == stateDefault {
 		emptyMsg := lipgloss.NewStyle().
 			Foreground(lipgloss.Color("245")).
 			Align(lipgloss.Center).
-			Width(m.windowWidth).
 			Render("No instances yet\n\nPress 'n' to create your first instance\nPress '?' for help\nPress 'q' to quit")
-		padding := (m.windowHeight - 6) / 2
-		if padding < 0 {
-			padding = 0
-		}
-		return strings.Repeat("\n", padding) + emptyMsg
+		content = fitBlockToRect(lipgloss.Place(layout.content.W, layout.content.H, lipgloss.Center, lipgloss.Center, emptyMsg), layout.content)
+	} else {
+		listBlock := fitBlock(m.list.String(), listWidth, layout.content.H)
+		previewBlock := fitBlock(m.tabbedWindow.String(), tabsWidth, layout.content.H)
+		content = fitBlockToRect(lipgloss.JoinHorizontal(lipgloss.Top, listBlock, previewBlock), layout.content)
 	}
-
-	listWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(m.list.String())
-	previewWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(m.tabbedWindow.String())
-	listAndPreview := lipgloss.JoinHorizontal(lipgloss.Top, listWithPadding, previewWithPadding)
 
 	// Add the status bar when multi-account mode is active.
 	statusBarStr := ""
@@ -1481,28 +1468,29 @@ func (m *home) View() string {
 	}
 
 	viewParts := []string{}
-	if setupBannerStr != "" {
-		viewParts = append(viewParts, setupBannerStr)
+	if layout.setupBanner.H > 0 {
+		viewParts = append(viewParts, fitBlockToRect(setupBannerStr, layout.setupBanner))
 	}
-	if conflictBannerStr != "" {
-		viewParts = append(viewParts, conflictBannerStr)
+	if layout.conflictBanner.H > 0 {
+		viewParts = append(viewParts, fitBlockToRect(conflictBannerStr, layout.conflictBanner))
 	}
-	if wakeBannerStr != "" {
-		viewParts = append(viewParts, wakeBannerStr)
+	if layout.wakeBanner.H > 0 {
+		viewParts = append(viewParts, fitBlockToRect(wakeBannerStr, layout.wakeBanner))
 	}
-	viewParts = append(viewParts,
-		listAndPreview,
-		m.menu.String(),
-	)
-	if statusBarStr != "" {
-		viewParts = append(viewParts, statusBarStr)
+	if layout.content.H > 0 {
+		viewParts = append(viewParts, content)
 	}
-	viewParts = append(viewParts, m.errBox.String())
+	if layout.menu.H > 0 {
+		viewParts = append(viewParts, fitBlockToRect(m.menu.String(), layout.menu))
+	}
+	if layout.status.H > 0 {
+		viewParts = append(viewParts, fitBlockToRect(statusBarStr, layout.status))
+	}
+	if layout.err.H > 0 {
+		viewParts = append(viewParts, fitBlockToRect(m.errBox.String(), layout.err))
+	}
 
-	mainView := lipgloss.JoinVertical(
-		lipgloss.Center,
-		viewParts...,
-	)
+	mainView := fitBlock(strings.Join(viewParts, "\n"), layout.viewport.W, layout.viewport.H)
 
 	if m.state == statePrompt {
 		if m.textInputOverlay == nil {
@@ -1512,34 +1500,62 @@ func (m *home) View() string {
 			log.ErrorLog.Printf("text input overlay is nil in statePrompt — rendering default view")
 			return mainView
 		}
-		return overlay.PlaceOverlay(0, 0, m.textInputOverlay.Render(), mainView, true, true)
+		return overlay.PlaceOverlayInViewport(m.windowWidth, m.windowHeight, m.textInputOverlay.Render(), mainView, true)
 	} else if m.state == stateHelp {
 		if m.textOverlay == nil {
 			log.ErrorLog.Printf("text overlay is nil in stateHelp — rendering default view")
 			return mainView
 		}
-		return overlay.PlaceOverlay(0, 0, m.textOverlay.Render(), mainView, true, true)
+		return overlay.PlaceOverlayInViewport(m.windowWidth, m.windowHeight, m.textOverlay.Render(), mainView, true)
 	} else if m.state == stateConfirm {
 		if m.confirmationOverlay == nil {
 			log.ErrorLog.Printf("confirmation overlay is nil in stateConfirm — rendering default view")
 			return mainView
 		}
-		return overlay.PlaceOverlay(0, 0, m.confirmationOverlay.Render(), mainView, true, true)
+		return overlay.PlaceOverlayInViewport(m.windowWidth, m.windowHeight, m.confirmationOverlay.Render(), mainView, true)
 	}
 
 	// Render overlays
 	if m.orchestrationOverlay != nil && m.orchestrationOverlay.IsVisible() {
-		return overlay.PlaceOverlay(0, 0, m.orchestrationOverlay.Render(), mainView, true, true)
+		return overlay.PlaceOverlayInViewport(m.windowWidth, m.windowHeight, m.orchestrationOverlay.Render(), mainView, true)
 	}
 	if m.logViewerOverlay != nil && m.logViewerOverlay.IsVisible() {
-		return overlay.PlaceOverlay(0, 0, m.logViewerOverlay.Render(), mainView, true, true)
+		return overlay.PlaceOverlayInViewport(m.windowWidth, m.windowHeight, m.logViewerOverlay.Render(), mainView, true)
 	}
 	if m.quickDispatchOverlay != nil {
-		return overlay.PlaceOverlay(0, 0, m.quickDispatchOverlay.Render(), mainView, true, true)
+		return overlay.PlaceOverlayInViewport(m.windowWidth, m.windowHeight, m.quickDispatchOverlay.Render(), mainView, true)
 	}
 	if m.reviewOverlay != nil {
-		return overlay.PlaceOverlay(0, 0, m.reviewOverlay.Render(), mainView, true, true)
+		return overlay.PlaceOverlayInViewport(m.windowWidth, m.windowHeight, m.reviewOverlay.Render(), mainView, true)
 	}
 
 	return mainView
+}
+
+func (m *home) currentLayout() layoutSpec {
+	return computeLayout(m.windowWidth, m.windowHeight, layoutFlags{
+		setupBanner:    m.setupNeeded,
+		conflictBanner: m.conflictBanner != "",
+		wakeBanner:     m.wakeBanner != "",
+		statusBar:      m.conductorConfig != nil && m.statusBar != nil,
+		errBox:         true,
+	})
+}
+
+func (m *home) sizeOverlays() {
+	if m.textInputOverlay != nil {
+		m.textInputOverlay.SetViewport(m.windowWidth, m.windowHeight)
+	}
+	if m.textOverlay != nil {
+		m.textOverlay.SetViewport(m.windowWidth, m.windowHeight)
+	}
+	if m.confirmationOverlay != nil {
+		m.confirmationOverlay.SetViewport(m.windowWidth, m.windowHeight)
+	}
+	if m.quickDispatchOverlay != nil {
+		m.quickDispatchOverlay.SetViewport(m.windowWidth, m.windowHeight)
+	}
+	if m.reviewOverlay != nil {
+		m.reviewOverlay.SetViewport(m.windowWidth, m.windowHeight)
+	}
 }

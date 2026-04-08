@@ -15,6 +15,8 @@ type ConfirmationOverlay struct {
 	message string
 	// Width of the overlay
 	width int
+	// Height of the overlay
+	height int
 	// Callback function to be called when the user confirms (presses 'y')
 	OnConfirm func()
 	// Callback function to be called when the user cancels (presses 'n' or 'esc')
@@ -70,6 +72,9 @@ func (c *ConfirmationOverlay) Render(opts ...WhitespaceOption) string {
 		BorderForeground(c.borderColor).
 		Padding(1, 2).
 		Width(c.width)
+	if c.height > 0 {
+		style = style.Height(c.height)
+	}
 
 	// Add the confirmation instructions
 	content := c.message + "\n\n" +
@@ -84,6 +89,13 @@ func (c *ConfirmationOverlay) Render(opts ...WhitespaceOption) string {
 // SetWidth sets the width of the confirmation overlay
 func (c *ConfirmationOverlay) SetWidth(width int) {
 	c.width = width
+}
+
+// SetViewport sets the confirmation overlay size from viewport dimensions.
+func (c *ConfirmationOverlay) SetViewport(viewW, viewH int) {
+	box := ComputeModalBox(viewW, viewH, 50, 12)
+	c.width = box.OuterWidth
+	c.height = box.OuterHeight
 }
 
 // SetBorderColor sets the border color of the confirmation overlay

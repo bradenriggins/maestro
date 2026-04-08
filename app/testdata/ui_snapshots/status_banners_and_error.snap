@@ -1,0 +1,40 @@
+ Multi-account orchestration is not configured. Run `maestro setup` to enable it.                                                           
+ ⚠ branch drift detected                                                                                                                    
+ System resumed after sleep — reconciling state. Check workers with 'o'.                                                                    
+                                                                                                                                            
+                                                                                                                                            
+ Instances                                ╭───────────────────────────────╮╭───────────────────────────────╮╭───────────────────────────────
+  ★ orchestrator  · worker  (model shown a│            Preview            ││             Diff              ││            Terminal           
+                                          │                               └┴───────────────────────────────┴┴───────────────────────────────
+  1.  worker-1 [acct-1]                  ●│                                                                                                 
+      Ꮧ-                                  │                                                                                                 
+                                          │                                                                                                 
+                                          │                                                                                                 
+                                          │                                                                                                 
+                                          │                                                                                                 
+                                          │                                                                                                 
+                                          │                                                                                                 
+                                          │                                                                                                 
+                                          │                                                                                                 
+                                          │                                                                                                 
+                                          │                                                                                                 
+                                          │                                                                                                 
+                                          │                                                                                                 
+                                          │                                                                                                 
+                                          │                                                                                                 
+                                          │                                                                                                 
+                                          │                                                                                                 
+                                          │                                                                                                 
+                                          │                                                                                                 
+                                          │                                                                                                 
+                                          │                                                                                                 
+                                          │                                                                                                 
+                                          │                                                                                                 
+                                          │                                                                                                 
+                                          │                                                                                                 
+                                          │                                                                                                 
+                                          │                                                                                                 
+                                          │                                                                                                 
+                                          │                                                                                                 
+                                                n new • N new with prompt │ ? help • q quit                                                 
+                                                              dispatch failed                                                               

@@ -1,0 +1,40 @@
+                                                                                                                                            
+                                                                                                                                            
+ Instances                   ╭────────────────────────────────────────────────────────────────────────────────╮─────────────────────────────
+                             │                                                                                │░         Terminal           
+                             │  Maestro                                                                       │░────────────────────────────
+                             │                                                                                │░                            
+                             │  A terminal UI for running Claude Code and Codex sessions in isolated          │░                            
+                             │  workspaces.                                                                   │░                            
+                             │                                                                                │░                            
+                             │  Managing:                                                                     │░                            
+                             │  n         - Create a new session                                              │░                            
+                             │  N         - Create a new session with a prompt                                │░                            
+                             │  x         - Kill (delete) the selected session                                │░                            
+                             │  ↑/j, ↓/k  - Navigate between sessions                                         │░                            
+                             │  ↵         - Attach to the selected session                                    │░                            
+                             │  ctrl-q    - Detach from session                                               │░                            
+                             │                                                                                │░                            
+                             │  Handoff:                                                                      │░                            
+                             │  P         - Commit and push branch to GitHub                                  │░                            
+                             │  p         - Pause: commit changes and pause session                           │░                            
+                             │  r         - Resume a paused session                                           │░                            
+                             │                                                                                │░                            
+                             │  Maestro:                                                                      │░                            
+                             │  o         - Orchestration overlay                                             │░                            
+                             │  /         - Quick-dispatch palette                                            │░                            
+                             │  d         - Show diff                                                         │░                            
+                             │  l         - Log viewer                                                        │░                            
+                             │  f         - Toggle preview mode                                               │░                            
+                             │                                                                                │░                            
+                             │  Other:                                                                        │░                            
+                             │  tab       - Switch between preview, diff, and terminal tabs                   │░                            
+                             │  shift-↓/↑ - Scroll in preview/diff/terminal view                              │░                            
+                             │  q         - Quit the application                                              │░                            
+                             │                                                                                │░                            
+                             │  [Any key] close                                                               │░                            
+                             │                                                                                │░                            
+                             ╰────────────────────────────────────────────────────────────────────────────────╯░                            
+                              ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░────────────────────────────
+                                                n new • N new with prompt │ ? help • q quit                                                 
+                                                                                                                                            

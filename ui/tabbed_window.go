@@ -79,16 +79,11 @@ func AdjustPreviewWidth(width int) int {
 }
 
 func (w *TabbedWindow) SetSize(width, height int) {
-	w.width = AdjustPreviewWidth(width)
+	w.width = width
 	w.height = height
 
-	// Calculate the content height by subtracting:
-	// 1. Tab height (including border and padding)
-	// 2. Window style vertical frame size
-	// 3. Additional padding/spacing (2 for the newline and spacing)
-	tabHeight := activeTabStyle.GetVerticalFrameSize() + 1
-	contentHeight := height - tabHeight - windowStyle.GetVerticalFrameSize() - 2
-	contentWidth := w.width - windowStyle.GetHorizontalFrameSize()
+	contentWidth := TabbedWindowContentWidth(width)
+	contentHeight := TabbedWindowContentHeight(height)
 
 	w.preview.SetSize(contentWidth, contentHeight)
 	w.diff.SetSize(contentWidth, contentHeight)

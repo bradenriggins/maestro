@@ -1,6 +1,8 @@
 package overlay
 
 import (
+	"strings"
+
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -16,7 +18,8 @@ type TextOverlay struct {
 	// Content to display in the overlay
 	content string
 
-	width int
+	width  int
+	height int
 }
 
 // NewTextOverlay creates a new text screen overlay with the given title and content
@@ -42,17 +45,32 @@ func (t *TextOverlay) HandleKeyPress(msg tea.KeyMsg) (bool, tea.Cmd) {
 
 // Render renders the text overlay
 func (t *TextOverlay) Render(opts ...WhitespaceOption) string {
-	// Create styles
 	style := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("62")).
 		Padding(1, 2).
 		Width(t.width)
+	if t.height > 0 {
+		style = style.Height(t.height)
+	}
 
-	// Apply the border style and return
-	return style.Render(t.content)
+	footer := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("[Any key] close")
+	content := t.content
+	if strings.TrimSpace(content) != "" {
+		content += "\n\n" + footer
+	} else {
+		content = footer
+	}
+
+	return style.Render(content)
 }
 
 func (t *TextOverlay) SetWidth(width int) {
 	t.width = width
+}
+
+func (t *TextOverlay) SetViewport(viewW, viewH int) {
+	box := ComputeModalBox(viewW, viewH, 80, 24)
+	t.width = box.OuterWidth
+	t.height = box.OuterHeight
 }

@@ -369,7 +369,6 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 				if selected != nil {
 					workers := []string{selected.Title}
 					m.quickDispatchOverlay = overlay.NewQuickDispatchOverlay(workers)
-					m.quickDispatchOverlay.SetWidth(m.windowWidth)
 					// Populate worker model info from the orchestration registry.
 					models := make(map[string]string)
 					if reg, regErr := orchestration.LoadRegistry(); regErr == nil {
@@ -380,6 +379,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 						}
 					}
 					m.quickDispatchOverlay.SetWorkerModels(models)
+					m.sizeOverlays()
 					m.state = stateQuickDispatch
 					return m, nil
 				}
@@ -665,7 +665,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		// If running a worker in multi-account mode, open the review overlay.
 		if m.conductorConfig != nil && selected.Account != "" && selected.Role == string(accounts.RoleWorker) {
 			m.reviewOverlay = overlay.NewReviewOverlay(selected.Title, selected.Branch, "main")
-			m.reviewOverlay.SetSize(m.windowWidth, 0)
+			m.sizeOverlays()
 			m.state = stateReview
 			return m, nil
 		}
@@ -699,7 +699,6 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		}
 		m.quickDispatchOverlay = overlay.NewQuickDispatchOverlay(workers)
 		m.quickDispatchOverlay.SetBusyCount(busyCount)
-		m.quickDispatchOverlay.SetWidth(m.windowWidth)
 		// Populate worker model info from the orchestration registry.
 		models := make(map[string]string)
 		if reg, regErr := orchestration.LoadRegistry(); regErr == nil {
@@ -710,6 +709,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			}
 		}
 		m.quickDispatchOverlay.SetWorkerModels(models)
+		m.sizeOverlays()
 		m.state = stateQuickDispatch
 		return m, nil
 	case keys.KeyLogViewer:

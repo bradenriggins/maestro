@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 )
 
 // ProfilePicker is an embeddable component for selecting a profile.
@@ -90,24 +91,37 @@ var (
 // Render renders the profile picker.
 func (pp *ProfilePicker) Render() string {
 	var s strings.Builder
-	s.WriteString(ppLabelStyle.Render("Profile"))
+	header := "Profile"
 
 	if pp.HasMultiple() && pp.focused {
-		s.WriteString(ppDimStyle.Render("  ←/→ to change"))
+		header += "  ←/→ to change"
 	}
+	s.WriteString(ppLabelStyle.Render(truncateToWidth(header, pp.width)))
 	s.WriteString("\n\n")
 
+	remaining := pp.width
 	for i, p := range pp.profiles {
+		if i > 0 && remaining > 0 {
+			sep := truncateToWidth(" | ", remaining)
+			s.WriteString(ppDimStyle.Render(sep))
+			remaining -= runewidth.StringWidth(sep)
+			if remaining <= 0 {
+				break
+			}
+		}
+
+		label := truncateToWidth(" "+p.Name+" ", remaining)
+		if label == "" {
+			break
+		}
 		if i == pp.cursor && pp.focused {
-			s.WriteString(ppSelectedStyle.Render(" " + p.Name + " "))
+			s.WriteString(ppSelectedStyle.Render(label))
 		} else if i == pp.cursor {
-			s.WriteString(" " + p.Name + " ")
+			s.WriteString(label)
 		} else {
-			s.WriteString(ppDimStyle.Render(" " + p.Name + " "))
+			s.WriteString(ppDimStyle.Render(label))
 		}
-		if i < len(pp.profiles)-1 {
-			s.WriteString(ppDimStyle.Render(" | "))
-		}
+		remaining -= runewidth.StringWidth(label)
 	}
 
 	return s.String()

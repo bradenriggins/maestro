@@ -28,6 +28,14 @@ var (
 // WhitespaceOption sets a styling rule for rendering whitespace.
 type WhitespaceOption func(*whitespace)
 
+// ViewportBox describes a modal overlay sized from a viewport.
+type ViewportBox struct {
+	OuterWidth  int
+	OuterHeight int
+	InnerWidth  int
+	InnerHeight int
+}
+
 // Split a string into lines, additionally returning the size of the widest
 // line.
 func getLines(s string) (lines []string, widest int) {
@@ -51,6 +59,26 @@ func CalculateCenterCoordinates(foregroundLines []string, backgroundLines []stri
 	y := (len(backgroundLines) - len(foregroundLines)) / 2
 
 	return x, y
+}
+
+// ComputeModalBox derives a viewport-sized modal box and the usable inner body area.
+func ComputeModalBox(viewW, viewH, maxW, maxH int) ViewportBox {
+	outerW := clamp(viewW*3/5, 24, overlayMin(viewW, maxW))
+	outerH := clamp(viewH*3/5, 8, overlayMin(viewH, maxH))
+
+	return ViewportBox{
+		OuterWidth:  outerW,
+		OuterHeight: outerH,
+		InnerWidth:  overlayMax(outerW-6, 1),
+		InnerHeight: overlayMax(outerH-4, 1),
+	}
+}
+
+// PlaceOverlayInViewport composes fg over a viewport-sized canvas instead of
+// relying on the rendered background content dimensions.
+func PlaceOverlayInViewport(viewW, viewH int, fg, bg string, shadow bool, opts ...WhitespaceOption) string {
+	canvas := lipgloss.Place(viewW, viewH, lipgloss.Left, lipgloss.Top, bg)
+	return PlaceOverlay(0, 0, fg, canvas, shadow, true, opts...)
 }
 
 // PlaceOverlay places fg on top of bg with an optional shadow effect.
@@ -122,10 +150,6 @@ func PlaceOverlay(
 	}
 
 	// Check if foreground exceeds background size in both dimensions.
-	if fgWidth >= bgWidth && fgHeight >= bgHeight {
-		return fg // Return foreground if it's larger than background in all dimensions
-	}
-
 	// Clamp coordinates to ensure foreground fits within background.
 	// Use overlayMax to guard against negative upper bounds when the foreground
 	// exceeds the background in a single dimension (e.g. wider but shorter).
@@ -231,6 +255,35 @@ func overlayMin(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// truncateToWidth shortens s so its printable width is at most maxWidth.
+func truncateToWidth(s string, maxWidth int) string {
+	if maxWidth <= 0 {
+		return ""
+	}
+	if ansi.PrintableRuneWidth(s) <= maxWidth {
+		return s
+	}
+	if maxWidth <= 3 {
+		return strings.Repeat(".", maxWidth)
+	}
+
+	var (
+		b      strings.Builder
+		width  int
+		target = maxWidth - 3
+	)
+	for _, r := range s {
+		rw := runewidth.RuneWidth(r)
+		if width+rw > target {
+			break
+		}
+		b.WriteRune(r)
+		width += rw
+	}
+	b.WriteString("...")
+	return b.String()
 }
 
 type whitespace struct {

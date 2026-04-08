@@ -45,9 +45,15 @@ func (e *ErrBox) String() string {
 		err = e.err.Error()
 		lines := strings.Split(err, "\n")
 		err = strings.Join(lines, "//")
-		if runewidth.StringWidth(err) > e.width-3 && e.width-3 >= 0 {
-			err = runewidth.Truncate(err, e.width-3, "...")
+		if e.width <= 0 {
+			err = ""
+		} else if runewidth.StringWidth(err) > e.width {
+			if e.width <= 3 {
+				err = runewidth.Truncate(err, e.width, "")
+			} else {
+				err = runewidth.Truncate(err, e.width-3, "...")
+			}
 		}
 	}
-	return lipgloss.Place(e.width, e.height, lipgloss.Center, lipgloss.Center, errStyle.Render(err))
+	return placeCentered(e.width, e.height, errStyle.Render(err))
 }

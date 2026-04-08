@@ -11,3 +11,5 @@ claude-squad
 cs
 artifacts/
 .worktrees/
+.superpowers/
+docs/superpowers/plans/

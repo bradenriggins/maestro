@@ -77,8 +77,14 @@ func NewOrchestrationOverlay() *OrchestrationOverlay {
 // SetSize calculates the overlay dimensions as 80% width and 60% height of the
 // terminal dimensions provided.
 func (o *OrchestrationOverlay) SetSize(w, h int) {
-	o.width = int(float32(w) * 0.8)
-	o.height = int(float32(h) * 0.6)
+	o.SetViewport(w, h)
+}
+
+// SetViewport sizes the orchestration overlay directly from viewport dimensions.
+func (o *OrchestrationOverlay) SetViewport(viewW, viewH int) {
+	box := ComputeModalBox(viewW, viewH, 120, 60)
+	o.width = box.OuterWidth
+	o.height = box.OuterHeight
 }
 
 // Toggle flips the visibility of the overlay.
@@ -673,8 +679,16 @@ func (o *OrchestrationOverlay) Render(opts ...WhitespaceOption) string {
 
 	// --- Freshness footer ---
 	freshnessStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	elapsed := time.Since(o.lastDataRefresh)
-	freshness := fmt.Sprintf("Updated %ds ago", int(elapsed.Seconds()))
+	freshness := "Waiting for first refresh"
+	if !o.lastDataRefresh.IsZero() {
+		elapsed := time.Since(o.lastDataRefresh)
+		seconds := int(elapsed.Seconds())
+		if seconds <= 0 {
+			freshness = "Updated just now"
+		} else {
+			freshness = fmt.Sprintf("Updated %ds ago", seconds)
+		}
+	}
 	b.WriteString("\n")
 	b.WriteString(freshnessStyle.Render(freshness))
 	b.WriteString("\n")

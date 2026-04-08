@@ -87,6 +87,39 @@ To add more accounts later:
 maestro add-account
 ```
 
+## Automated Testing
+
+Maestro now includes a layered automation harness so you can test CLI behavior and core TUI flows without manual input.
+
+```bash
+make test       # unit/package tests
+make test-race  # race detector
+make smoke      # isolated CLI smoke tests in a temp HOME
+make e2e        # automated TUI flow tests
+make ui-audit   # UX/interaction audit report + artifacts
+make ui-snapshots # snapshot regression checks for major UI states
+make ci         # full local validation pass
+```
+
+### What the automation covers
+
+- **Unit/integration logic** via `go test ./...`
+- **Concurrency issues** via `go test -race ./...`
+- **CLI sanity checks** for commands like `version`, `debug`, `doctor`, and setup-required failure paths
+- **Headless TUI interaction tests** that drive the Bubble Tea model with synthetic keypresses and assert rendered output for:
+  - empty state
+  - help overlay + dismiss affordance
+  - prompt flow + cancellation
+  - orchestration / log viewer / quick-dispatch toggles
+  - review-to-redispatch transition
+  - clean state restoration after cancellation or nil-overlay drift
+- **UX audit artifacts** via `make ui-audit`, which writes machine-readable test output and a markdown summary under `artifacts/ui-audit/`
+- **Snapshot regression coverage** via `make ui-snapshots`, which locks major UI states to checked-in baseline renders under `app/testdata/ui_snapshots/`
+
+### Current limit
+
+This gives you real automation for logic and interaction flow, but subjective UX quality still needs richer heuristics over time. The next layer after this is broader scenario coverage, snapshot-style render assertions, and failure-recovery scoring for orchestration workflows.
+
 ## CLI Reference
 
 | Command | Description |
