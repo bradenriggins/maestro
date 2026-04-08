@@ -9,3 +9,5 @@ main
 claude-conductor
 claude-squad
 cs
+artifacts/
+.worktrees/
