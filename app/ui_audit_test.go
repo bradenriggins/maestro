@@ -2,6 +2,9 @@ package app
 
 import (
 	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -233,6 +236,12 @@ type automationInstanceOpts struct {
 
 func newAutomationHome(t *testing.T) *home {
 	t.Helper()
+	sourceRoot, err := os.Getwd()
+	require.NoError(t, err)
+	t.Setenv("MAESTRO_TEST_SOURCE_ROOT", sourceRoot)
+
+	repo := initAutomationRepo(t)
+	t.Chdir(repo)
 	t.Setenv("HOME", t.TempDir())
 
 	h, err := newHome(context.Background(), "claude", false, true, true)
@@ -242,6 +251,33 @@ func newAutomationHome(t *testing.T) *home {
 	h.setupNeeded = false
 	h.updateHandleWindowSizeEvent(tea.WindowSizeMsg{Width: 140, Height: 40})
 	return h
+}
+
+func initAutomationRepo(t *testing.T) string {
+	t.Helper()
+
+	repo := t.TempDir()
+	runTestGit(t, repo, "init", "-b", "main")
+
+	readmePath := filepath.Join(repo, "README.md")
+	require.NoError(t, os.WriteFile(readmePath, []byte("automation test repo\n"), 0o644))
+	runTestGit(t, repo, "add", "README.md")
+	runTestGit(t, repo,
+		"-c", "user.name=Automation Tests",
+		"-c", "user.email=automation-tests@example.com",
+		"commit", "-m", "initial commit",
+	)
+
+	return repo
+}
+
+func runTestGit(t *testing.T, repo string, args ...string) {
+	t.Helper()
+
+	cmd := exec.Command("git", args...)
+	cmd.Dir = repo
+	output, err := cmd.CombinedOutput()
+	require.NoErrorf(t, err, "git %s failed: %s", strings.Join(args, " "), string(output))
 }
 
 func addAutomationInstance(t *testing.T, h *home, opts automationInstanceOpts) *session.Instance {

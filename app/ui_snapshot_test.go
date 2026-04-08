@@ -3,6 +3,7 @@ package app
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -155,7 +156,13 @@ func normalizeSnapshotText(in string) string {
 
 func assertSnapshot(t *testing.T, name, got string) {
 	t.Helper()
-	path := filepath.Join("testdata", "ui_snapshots", name+".snap")
+	root := os.Getenv("MAESTRO_TEST_SOURCE_ROOT")
+	if root == "" {
+		_, thisFile, _, ok := runtime.Caller(0)
+		require.True(t, ok)
+		root = filepath.Dir(thisFile)
+	}
+	path := filepath.Join(root, "testdata", "ui_snapshots", name+".snap")
 	if os.Getenv("UPDATE_UI_SNAPSHOTS") == "1" {
 		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
 		require.NoError(t, os.WriteFile(path, []byte(got), 0o644))
