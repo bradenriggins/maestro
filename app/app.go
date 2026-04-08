@@ -122,6 +122,7 @@ type home struct {
 	quickDispatchOverlay *overlay.QuickDispatchOverlay
 	logViewerOverlay     *overlay.LogViewerOverlay
 	reviewOverlay        *overlay.ReviewOverlay
+	workflowNav          *ui.WorkflowNav
 	statusBar            *ui.StatusBar
 
 	// windowWidth stores the last known terminal width for overlay sizing
@@ -202,6 +203,7 @@ func newHome(ctx context.Context, program string, autoYes bool, fresh bool, noSa
 		conductorConfig:      conductorCfg,
 		orchestrationOverlay: orchOverlay,
 		logViewerOverlay:     logOverlay,
+		workflowNav:          ui.NewWorkflowNav(),
 		statusBar:            statusBar,
 		lastReconcileTime:    time.Now(),
 		lastOutputChange:     make(map[string]time.Time),
@@ -246,20 +248,16 @@ func newHome(ctx context.Context, program string, autoYes bool, fresh bool, noSa
 // updateHandleWindowSizeEvent sets the sizes of the components.
 // The components will try to render inside their bounds.
 func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
-	// List takes 30% of width, preview takes 70%
-	listWidth := int(float32(msg.Width) * 0.3)
-	tabsWidth := msg.Width - listWidth
+	layout := newLayoutSpec(msg.Width, msg.Height, m.shellBannerHeight(), m.shellFooterHeight())
+	listWidth, tabsWidth := splitMainPaneWidth(layout.main.Width)
 
-	// Menu takes 10% of height, list and window take 90%
-	contentHeight := int(float32(msg.Height) * 0.9)
-	menuHeight := msg.Height - contentHeight - 1 // minus 1 for error box
-	if menuHeight < 0 {
-		menuHeight = 0
+	m.errBox.SetSize(layout.error.Width, layout.error.Height)
+	m.tabbedWindow.SetSize(tabsWidth, layout.main.Height)
+	m.list.SetSize(listWidth, layout.main.Height)
+	if m.workflowNav != nil {
+		m.workflowNav.SetItems(m.workflowNavItems())
+		m.workflowNav.SetSize(layout.nav.Width, layout.nav.Height)
 	}
-	m.errBox.SetSize(int(float32(msg.Width)*0.9), 1) // error box takes 1 row
-
-	m.tabbedWindow.SetSize(tabsWidth, contentHeight)
-	m.list.SetSize(listWidth, contentHeight)
 
 	if m.textInputOverlay != nil {
 		m.textInputOverlay.SetSize(int(float32(msg.Width)*0.6), int(float32(msg.Height)*0.4))
@@ -272,7 +270,7 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 	if err := m.list.SetSessionPreviewSize(previewWidth, previewHeight); err != nil {
 		log.ErrorLog.Print(err)
 	}
-	m.menu.SetSize(msg.Width, menuHeight)
+	m.menu.SetSize(layout.footer.Width, 1)
 	m.windowWidth = msg.Width
 	m.windowHeight = msg.Height
 
@@ -283,7 +281,7 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 		m.logViewerOverlay.SetSize(msg.Width, msg.Height)
 	}
 	if m.statusBar != nil {
-		m.statusBar.SetWidth(msg.Width)
+		m.statusBar.SetWidth(layout.footer.Width)
 	}
 }
 
@@ -1424,85 +1422,16 @@ func (m *home) handleBulkRetry() (tea.Model, tea.Cmd) {
 }
 
 func (m *home) View() string {
-	// Empty-state welcome screen: when no instances exist and no overlay is active,
-	// show a centered guidance message instead of a blank list.
-	if m.list.NumInstances() == 0 && m.state == stateDefault {
-		emptyMsg := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("245")).
-			Align(lipgloss.Center).
-			Width(m.windowWidth).
-			Render("No instances yet\n\nPress 'n' to create your first instance\nPress '?' for help\nPress 'q' to quit")
-		padding := (m.windowHeight - 6) / 2
-		if padding < 0 {
-			padding = 0
-		}
-		return strings.Repeat("\n", padding) + emptyMsg
-	}
+	layout := newLayoutSpec(m.windowWidth, m.windowHeight, m.shellBannerHeight(), m.shellFooterHeight())
+	mainContent := m.renderMainPane(layout.main.Width, layout.main.Height)
+	mainView := m.renderShell(layout, mainContent)
 
-	listWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(m.list.String())
-	previewWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(m.tabbedWindow.String())
-	listAndPreview := lipgloss.JoinHorizontal(lipgloss.Top, listWithPadding, previewWithPadding)
-
-	// Add the status bar when multi-account mode is active.
-	statusBarStr := ""
-	if m.conductorConfig != nil && m.statusBar != nil {
-		statusBarStr = m.statusBar.Render()
+	if banners := m.renderShellBanners(); len(banners) > 0 {
+		viewParts := make([]string, 0, len(banners)+1)
+		viewParts = append(viewParts, banners...)
+		viewParts = append(viewParts, mainView)
+		mainView = lipgloss.JoinVertical(lipgloss.Left, viewParts...)
 	}
-
-	// Setup-needed banner shown when no account config exists on first run.
-	setupBannerStr := ""
-	if m.setupNeeded {
-		setupBannerStyle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("214")).
-			Bold(true).
-			Padding(0, 1)
-		setupBannerStr = setupBannerStyle.Render(
-			"Multi-account orchestration is not configured. Run `maestro setup` to enable it.")
-	}
-
-	// Conflict banner
-	conflictBannerStr := ""
-	if m.conflictBanner != "" {
-		conflictBannerStyle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("226")).
-			Bold(true).
-			Padding(0, 1)
-		conflictBannerStr = conflictBannerStyle.Render(m.conflictBanner)
-	}
-
-	// Wake-from-sleep banner
-	wakeBannerStr := ""
-	if m.wakeBanner != "" {
-		wakeBannerStyle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("214")).
-			Bold(true).
-			Padding(0, 1)
-		wakeBannerStr = wakeBannerStyle.Render(m.wakeBanner)
-	}
-
-	viewParts := []string{}
-	if setupBannerStr != "" {
-		viewParts = append(viewParts, setupBannerStr)
-	}
-	if conflictBannerStr != "" {
-		viewParts = append(viewParts, conflictBannerStr)
-	}
-	if wakeBannerStr != "" {
-		viewParts = append(viewParts, wakeBannerStr)
-	}
-	viewParts = append(viewParts,
-		listAndPreview,
-		m.menu.String(),
-	)
-	if statusBarStr != "" {
-		viewParts = append(viewParts, statusBarStr)
-	}
-	viewParts = append(viewParts, m.errBox.String())
-
-	mainView := lipgloss.JoinVertical(
-		lipgloss.Center,
-		viewParts...,
-	)
 
 	if m.state == statePrompt {
 		if m.textInputOverlay == nil {
