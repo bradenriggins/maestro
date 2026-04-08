@@ -66,3 +66,19 @@ func TestCurrentWorkflowDefaultsToSessions(t *testing.T) {
 
 	require.Equal(t, workflowSessions, h.currentWorkflow())
 }
+
+func TestViewDoesNotMutateWorkflowNavState(t *testing.T) {
+	h := newWorkflowShellTestHome(t)
+	h.workflowNav.SetItems([]ui.WorkflowNavItem{{
+		ID:       "sentinel",
+		Label:    "Sentinel",
+		Hint:     "render state should stay untouched",
+		Selected: true,
+	}})
+	h.workflowNav.SetSize(12, 4)
+	initialRender := h.workflowNav.Render()
+
+	_ = h.View()
+
+	require.Equal(t, initialRender, h.workflowNav.Render())
+}

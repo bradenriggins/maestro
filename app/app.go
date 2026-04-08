@@ -248,17 +248,6 @@ func newHome(ctx context.Context, program string, autoYes bool, fresh bool, noSa
 // updateHandleWindowSizeEvent sets the sizes of the components.
 // The components will try to render inside their bounds.
 func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
-	layout := newLayoutSpec(msg.Width, msg.Height, m.shellBannerHeight(), m.shellFooterHeight())
-	listWidth, tabsWidth := splitMainPaneWidth(layout.main.Width)
-
-	m.errBox.SetSize(layout.error.Width, layout.error.Height)
-	m.tabbedWindow.SetSize(tabsWidth, layout.main.Height)
-	m.list.SetSize(listWidth, layout.main.Height)
-	if m.workflowNav != nil {
-		m.workflowNav.SetItems(m.workflowNavItems())
-		m.workflowNav.SetSize(layout.nav.Width, layout.nav.Height)
-	}
-
 	if m.textInputOverlay != nil {
 		m.textInputOverlay.SetSize(int(float32(msg.Width)*0.6), int(float32(msg.Height)*0.4))
 	}
@@ -266,22 +255,15 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 		m.textOverlay.SetWidth(int(float32(msg.Width) * 0.6))
 	}
 
-	previewWidth, previewHeight := m.tabbedWindow.GetPreviewSize()
-	if err := m.list.SetSessionPreviewSize(previewWidth, previewHeight); err != nil {
-		log.ErrorLog.Print(err)
-	}
-	m.menu.SetSize(layout.footer.Width, 1)
 	m.windowWidth = msg.Width
 	m.windowHeight = msg.Height
+	m.syncShellLayout()
 
 	if m.orchestrationOverlay != nil {
 		m.orchestrationOverlay.SetSize(msg.Width, msg.Height)
 	}
 	if m.logViewerOverlay != nil {
 		m.logViewerOverlay.SetSize(msg.Width, msg.Height)
-	}
-	if m.statusBar != nil {
-		m.statusBar.SetWidth(layout.footer.Width)
 	}
 }
 
@@ -303,6 +285,8 @@ func (m *home) Init() tea.Cmd {
 }
 
 func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	defer m.syncShellLayout()
+
 	// Guard against state desync: if an overlay was supposed to be shown but its
 	// backing field is nil, reset to stateDefault so View() renders correctly.
 	// This is the right place for state mutation — never inside View().
@@ -1426,7 +1410,7 @@ func (m *home) View() string {
 	mainContent := m.renderMainPane(layout.main.Width, layout.main.Height)
 	mainView := m.renderShell(layout, mainContent)
 
-	if banners := m.renderShellBanners(); len(banners) > 0 {
+	if banners := m.renderShellBanners(layout.viewport.Width); len(banners) > 0 {
 		viewParts := make([]string, 0, len(banners)+1)
 		viewParts = append(viewParts, banners...)
 		viewParts = append(viewParts, mainView)

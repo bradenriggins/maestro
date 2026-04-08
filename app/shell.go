@@ -1,6 +1,7 @@
 package app
 
 import (
+	"maestro/log"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -30,7 +31,46 @@ func (m *home) shellFooterHeight() int {
 	return height
 }
 
-func (m *home) renderShellBanners() []string {
+func (m *home) syncShellLayout() {
+	layout := newLayoutSpec(m.windowWidth, m.windowHeight, m.shellBannerHeight(), m.shellFooterHeight())
+
+	if m.errBox != nil {
+		m.errBox.SetSize(layout.error.Width, layout.error.Height)
+	}
+
+	if m.tabbedWindow != nil || m.list != nil {
+		listWidth, tabsWidth := splitMainPaneWidth(layout.main.Width)
+		if m.tabbedWindow != nil {
+			m.tabbedWindow.SetSize(tabsWidth, layout.main.Height)
+		}
+		if m.list != nil {
+			m.list.SetSize(listWidth, layout.main.Height)
+			if m.tabbedWindow != nil {
+				previewWidth, previewHeight := m.tabbedWindow.GetPreviewSize()
+				if err := m.list.SetSessionPreviewSize(previewWidth, previewHeight); err != nil {
+					log.ErrorLog.Print(err)
+				}
+			}
+		}
+	}
+
+	if m.workflowNav != nil {
+		m.workflowNav.SetItems(m.workflowNavItems())
+		m.workflowNav.SetSize(layout.nav.Width, layout.nav.Height)
+	}
+	if m.menu != nil {
+		menuHeight := 0
+		if layout.footer.Height > 0 {
+			menuHeight = 1
+		}
+		m.menu.SetSize(layout.footer.Width, menuHeight)
+	}
+	if m.statusBar != nil {
+		m.statusBar.SetWidth(layout.footer.Width)
+	}
+}
+
+func (m *home) renderShellBanners(width int) []string {
 	var banners []string
 
 	if m.setupNeeded {
@@ -53,6 +93,10 @@ func (m *home) renderShellBanners() []string {
 			Bold(true).
 			Padding(0, 1).
 			Render(m.wakeBanner))
+	}
+
+	for i, banner := range banners {
+		banners[i] = fitBox(width, 1, banner)
 	}
 
 	return banners
@@ -103,11 +147,6 @@ func (m *home) renderFooter(layout layoutSpec) string {
 }
 
 func (m *home) renderShell(layout layoutSpec, mainContent string) string {
-	if m.workflowNav != nil {
-		m.workflowNav.SetItems(m.workflowNavItems())
-		m.workflowNav.SetSize(layout.nav.Width, layout.nav.Height)
-	}
-
 	navView := fitBox(layout.nav.Width, layout.nav.Height, "")
 	if m.workflowNav != nil {
 		navView = fitBox(layout.nav.Width, layout.nav.Height, m.workflowNav.Render())

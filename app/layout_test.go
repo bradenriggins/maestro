@@ -38,3 +38,14 @@ func TestRenderedViewFitsViewportUnderStress(t *testing.T) {
 		})
 	}
 }
+
+func TestRenderedViewFitsViewportAfterBannerStateChangeWithoutResize(t *testing.T) {
+	h := newWorkflowShellTestHome(t)
+
+	h.conflictBanner = strings.Repeat("conflict ", 40)
+	_, _ = h.Update(hideErrMsg{})
+	rendered := h.View()
+
+	assertRenderedViewFitsViewport(t, rendered, 100, 28)
+	require.Contains(t, rendered, "conflict")
+}
