@@ -11,7 +11,8 @@ import (
 
 // RunDoctor performs a diagnostic check of the maestro installation,
 // verifying configuration, accounts, registry, tasks, permissions,
-// and required binaries. It exits with code 2 on errors, 1 on warnings.
+// and required binaries. It returns an exit-code-bearing error for
+// warning/error outcomes so process termination stays at the top level.
 func RunDoctor() error {
 	var warnings, errs int
 
@@ -125,12 +126,12 @@ func RunDoctor() error {
 
 	if errs > 0 {
 		fmt.Printf("\n%d error(s), %d warning(s) found.\n", errs, warnings)
-		os.Exit(2)
-	} else if warnings > 0 {
-		fmt.Printf("\n%d warning(s) found.\n", warnings)
-		os.Exit(1)
-	} else {
-		fmt.Println("\nAll checks passed.")
+		return &ExitError{Code: 2}
 	}
+	if warnings > 0 {
+		fmt.Printf("\n%d warning(s) found.\n", warnings)
+		return &ExitError{Code: 1}
+	}
+	fmt.Println("\nAll checks passed.")
 	return nil
 }

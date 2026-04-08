@@ -30,12 +30,16 @@ const GlobalInstanceLimit = 10
 
 // Run is the main entrypoint into the application.
 func Run(ctx context.Context, program string, autoYes bool, fresh bool, noSafetyNet bool) error {
+	model, err := newHome(ctx, program, autoYes, fresh, noSafetyNet)
+	if err != nil {
+		return err
+	}
 	p := tea.NewProgram(
-		newHome(ctx, program, autoYes, fresh, noSafetyNet),
+		model,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(), // Mouse scroll
 	)
-	_, err := p.Run()
+	_, err = p.Run()
 	return err
 }
 
@@ -158,7 +162,7 @@ type home struct {
 	pendingConfirmAction tea.Cmd
 }
 
-func newHome(ctx context.Context, program string, autoYes bool, fresh bool, noSafetyNet bool) *home {
+func newHome(ctx context.Context, program string, autoYes bool, fresh bool, noSafetyNet bool) (*home, error) {
 	// Load application config
 	appConfig := config.LoadConfig()
 
@@ -168,7 +172,7 @@ func newHome(ctx context.Context, program string, autoYes bool, fresh bool, noSa
 	// Load account config (optional — nil means single-account mode)
 	conductorCfg, err := accounts.LoadConductorConfig()
 	if err != nil {
-		log.ErrorLog.Printf("failed to load account config: %v", err)
+		return nil, fmt.Errorf("failed to load account config: %w", err)
 	}
 	// setupNeeded is true on first run before 'maestro setup' has been run.
 	setupNeeded := conductorCfg == nil
@@ -176,8 +180,7 @@ func newHome(ctx context.Context, program string, autoYes bool, fresh bool, noSa
 	// Initialize storage
 	storage, err := session.NewStorage(appState)
 	if err != nil {
-		fmt.Printf("Failed to initialize storage: %v\n", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("failed to initialize storage: %w", err)
 	}
 
 	orchOverlay := overlay.NewOrchestrationOverlay()
@@ -210,8 +213,7 @@ func newHome(ctx context.Context, program string, autoYes bool, fresh bool, noSa
 	// Load saved instances
 	instances, err := storage.LoadInstances()
 	if err != nil {
-		fmt.Printf("Failed to load instances: %v\n", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("failed to load instances: %w", err)
 	}
 
 	// Add loaded instances to the list
@@ -238,7 +240,7 @@ func newHome(ctx context.Context, program string, autoYes bool, fresh bool, noSa
 		}
 	}
 
-	return h
+	return h, nil
 }
 
 // updateHandleWindowSizeEvent sets the sizes of the components.

@@ -4,30 +4,24 @@ import (
 	"context"
 	"fmt"
 	"maestro/pkg/orchestration"
-	"os"
 	"time"
 )
 
 // RunDispatchCmd dispatches a task to a named worker instance. It handles
 // dependency validation, scheduled dispatch, and re-dispatch of existing tasks.
 func RunDispatchCmd(instanceName, taskPrompt, redispatchTaskID string, afterDeps []string, schedule bool, duration, maxWait int) error {
-	// Validate that --schedule and --after are not both set
 	if schedule && len(afterDeps) > 0 {
-		fmt.Fprintf(os.Stderr, "Error: --schedule and --after cannot be used together\n")
-		os.Exit(1)
+		return NewExitError(1, "--schedule and --after cannot be used together")
 	}
 
-	// Validate that all referenced deps exist before dispatching
 	if len(afterDeps) > 0 {
 		store, storeErr := orchestration.NewTaskStore()
 		if storeErr != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", storeErr)
-			os.Exit(1)
+			return NewExitError(1, "%v", storeErr)
 		}
 		for _, depID := range afterDeps {
 			if _, depErr := store.Get(depID); depErr != nil {
-				fmt.Fprintf(os.Stderr, "Error: dependency task %q not found\n", depID)
-				os.Exit(1)
+				return NewExitError(1, "dependency task %q not found", depID)
 			}
 		}
 	}
@@ -47,12 +41,7 @@ func RunDispatchCmd(instanceName, taskPrompt, redispatchTaskID string, afterDeps
 	}
 
 	if err != nil {
-		if de, ok := err.(*orchestration.DispatchError); ok {
-			fmt.Fprintf(os.Stderr, "Error: %s\n", de.Msg)
-			os.Exit(de.Code)
-		}
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		return err
 	}
 
 	if result.Pending {

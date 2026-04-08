@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"os/exec"
 	"strings"
 )
@@ -29,4 +30,41 @@ func ToString(cmd *exec.Cmd) string {
 		return "<nil>"
 	}
 	return strings.Join(cmd.Args, " ")
+}
+
+type ExitCoder interface {
+	ExitCode() int
+}
+
+type ExitError struct {
+	Code int
+	Err  error
+}
+
+func (e *ExitError) Error() string {
+	if e == nil || e.Err == nil {
+		return ""
+	}
+	return e.Err.Error()
+}
+
+func (e *ExitError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func (e *ExitError) ExitCode() int {
+	if e == nil || e.Code == 0 {
+		return 1
+	}
+	return e.Code
+}
+
+func NewExitError(code int, format string, args ...any) *ExitError {
+	return &ExitError{
+		Code: code,
+		Err:  fmt.Errorf(format, args...),
+	}
 }

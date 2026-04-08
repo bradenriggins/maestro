@@ -24,6 +24,13 @@ func (e *DispatchError) Error() string {
 	return e.Msg
 }
 
+func (e *DispatchError) ExitCode() int {
+	if e == nil || e.Code == 0 {
+		return 1
+	}
+	return e.Code
+}
+
 // DispatchResult holds the outcome of a successful dispatch.
 type DispatchResult struct {
 	TaskID       string

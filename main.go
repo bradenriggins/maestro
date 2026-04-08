@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -36,8 +37,10 @@ var (
 	durationFlag     int
 	maxWaitFlag      int
 	rootCmd          = &cobra.Command{
-		Use:   "maestro",
-		Short: "Maestro - Multi-account Claude Code and Codex orchestration.",
+		Use:           "maestro",
+		Short:         "Maestro - Multi-account Claude Code and Codex orchestration.",
+		SilenceErrors: true,
+		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
 			defer log.Close()
@@ -483,6 +486,14 @@ func loadConductorConfig() (*accounts.ConductorConfig, error) {
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
-		os.Exit(1)
+		code := 1
+		var exitCoder cmd2.ExitCoder
+		if errors.As(err, &exitCoder) {
+			code = exitCoder.ExitCode()
+		}
+		if msg := strings.TrimSpace(err.Error()); msg != "" {
+			fmt.Fprintln(os.Stderr, "Error:", msg)
+		}
+		os.Exit(code)
 	}
 }
