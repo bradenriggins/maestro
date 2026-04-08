@@ -15,17 +15,27 @@ import (
 func newWorkflowShellTestHome(t *testing.T) *home {
 	t.Helper()
 
-	spin := spinner.New(spinner.WithSpinner(spinner.MiniDot))
-	list := ui.NewList(&spin, false)
+	h := newAutomationHomeForTest(t)
+
 	instance, err := session.NewInstance(session.InstanceOptions{
 		Title:   "shell-test",
 		Path:    t.TempDir(),
 		Program: "claude",
 	})
 	require.NoError(t, err)
-	list.AddInstance(instance)()
+	h.list.AddInstance(instance)()
 
-	h := &home{
+	h.updateHandleWindowSizeEvent(tea.WindowSizeMsg{Width: 100, Height: 28})
+	return h
+}
+
+func newAutomationHomeForTest(t *testing.T) *home {
+	t.Helper()
+
+	spin := spinner.New(spinner.WithSpinner(spinner.MiniDot))
+	list := ui.NewList(&spin, false)
+
+	return &home{
 		ctx:          context.Background(),
 		state:        stateDefault,
 		appConfig:    config.DefaultConfig(),
@@ -36,9 +46,6 @@ func newWorkflowShellTestHome(t *testing.T) *home {
 		statusBar:    ui.NewStatusBar(),
 		workflowNav:  ui.NewWorkflowNav(),
 	}
-
-	h.updateHandleWindowSizeEvent(tea.WindowSizeMsg{Width: 100, Height: 28})
-	return h
 }
 
 func TestWorkflowShellShowsPrimaryWorkflowsAndFitsViewport(t *testing.T) {
@@ -55,7 +62,7 @@ func TestWorkflowShellShowsPrimaryWorkflowsAndFitsViewport(t *testing.T) {
 }
 
 func TestCurrentWorkflowDefaultsToSessions(t *testing.T) {
-	h := &home{state: stateDefault}
+	h := newAutomationHomeForTest(t)
 
 	require.Equal(t, workflowSessions, h.currentWorkflow())
 }
