@@ -104,11 +104,10 @@ func (m *Menu) actions() []ActionBarAction {
 }
 
 func (m *Menu) instanceActions() []ActionBarAction {
-	actions := []ActionBarAction{
-		{Key: keys.KeyEnter, Label: "open"},
-	}
+	actions := make([]ActionBarAction, 0, 7)
 
 	if m.instance != nil && m.instance.Status != session.Loading {
+		actions = append(actions, ActionBarAction{Key: keys.KeyEnter, Label: "open"})
 		if m.instance.Status == session.Paused {
 			actions = append(actions, ActionBarAction{Key: keys.KeyResume, Label: "resume"})
 		} else {
