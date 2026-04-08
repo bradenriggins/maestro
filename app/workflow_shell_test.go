@@ -5,6 +5,7 @@ import (
 	"maestro/config"
 	"maestro/session"
 	"maestro/ui"
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -24,6 +25,8 @@ func newWorkflowShellTestHome(t *testing.T) *home {
 	})
 	require.NoError(t, err)
 	h.list.AddInstance(instance)()
+	h.list.SetSelectedInstance(0)
+	_ = h.instanceChanged()
 
 	h.updateHandleWindowSizeEvent(tea.WindowSizeMsg{Width: 100, Height: 28})
 	return h
@@ -59,6 +62,19 @@ func TestWorkflowShellShowsPrimaryWorkflowsAndFitsViewport(t *testing.T) {
 	require.Contains(t, rendered, "History")
 	require.Contains(t, rendered, "System")
 	assertRenderedViewFitsViewport(t, rendered, 100, 28)
+}
+
+func TestActionBarShowsPrimaryActionsForSessionsWorkflow(t *testing.T) {
+	h := newWorkflowShellTestHome(t)
+
+	rendered := h.View()
+
+	require.Contains(t, rendered, "Enter open")
+	require.Contains(t, rendered, "/ dispatch")
+	require.Contains(t, rendered, "? system")
+	require.NotContains(t, rendered, "N new with prompt")
+	require.NotContains(t, rendered, "q quit")
+	require.False(t, strings.Contains(rendered, "↵ attach"), "legacy menu hint strip should not be rendered")
 }
 
 func TestCurrentWorkflowDefaultsToSessions(t *testing.T) {

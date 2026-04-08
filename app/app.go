@@ -211,6 +211,7 @@ func newHome(ctx context.Context, program string, autoYes bool, fresh bool, noSa
 		setupNeeded:          setupNeeded,
 	}
 	h.list = ui.NewList(&h.spinner, autoYes)
+	h.menu.SetSummary(statusBar.Summary())
 
 	// Load saved instances
 	instances, err := storage.LoadInstances()
@@ -475,6 +476,9 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return uiCacheRefreshMsg{apply: func() {
 						if sb != nil {
 							sb.SetCounts(sbCounts)
+							if m.menu != nil {
+								m.menu.SetSummary(sb.Summary())
+							}
 						}
 						if orchVisible {
 							orch.SetCachedData(orchData)
@@ -1050,6 +1054,7 @@ func (m *home) instanceChanged() tea.Cmd {
 	m.tabbedWindow.UpdateDiff(selected)
 	m.tabbedWindow.SetInstance(selected)
 	// Update menu with current instance
+	m.menu.SetActiveTab(m.tabbedWindow.GetActiveTab())
 	m.menu.SetInstance(selected)
 
 	// Call UpdatePreview only for states that don't require subprocess I/O (nil / Loading / Paused).
@@ -1069,7 +1074,7 @@ func (m *home) instanceChanged() tea.Cmd {
 
 type keyupMsg struct{}
 
-// keydownCallback clears the menu option highlighting after 500ms.
+// keydownCallback clears the footer action highlight after 500ms.
 func (m *home) keydownCallback(name keys.KeyName) tea.Cmd {
 	m.menu.Keydown(name)
 	return func() tea.Msg {

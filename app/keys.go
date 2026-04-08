@@ -22,8 +22,9 @@ import (
 )
 
 func (m *home) handleMenuHighlighting(msg tea.KeyMsg) (cmd tea.Cmd, returnEarly bool) {
-	// Handle menu highlighting when you press a button. We intercept it here and immediately return to
-	// update the ui while re-sending the keypress. Then, on the next call to this, we actually handle the keypress.
+	// Handle footer action highlighting when you press a button. We intercept it here
+	// and immediately return to update the UI while re-sending the keypress. Then, on
+	// the next call to this, we actually handle the keypress.
 	if m.keySent {
 		m.keySent = false
 		return nil, false
@@ -47,7 +48,7 @@ func (m *home) handleMenuHighlighting(msg tea.KeyMsg) (cmd tea.Cmd, returnEarly 
 	}
 
 	// Promote Enter to the "submit name" action while the new-instance overlay
-	// is active so the menu highlights the correct action.
+	// is active so the footer highlights the correct action.
 	if name == keys.KeyEnter && m.state == stateNew {
 		name = keys.KeySubmitName
 	}
