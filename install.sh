@@ -60,7 +60,7 @@ detect_platform_and_arch() {
 
 get_latest_version() {
     local response
-    if ! response=$(curl -fsSL "https://api.github.com/repos/bradenmweight/maestro/releases/latest"); then
+    if ! response=$(curl -fsSL "https://api.github.com/repos/bradenriggins/maestro/releases/latest"); then
         echo "Failed to fetch the latest release from GitHub"
         exit 1
     fi
@@ -100,7 +100,7 @@ download_release() {
             echo ""
             echo "Tip: Try installing a specific version instead of 'latest'"
             echo "Available versions:"
-            curl -fsSL "https://api.github.com/repos/bradenmweight/maestro/releases" \
+            curl -fsSL "https://api.github.com/repos/bradenriggins/maestro/releases" \
               | jq -r '.[].tag_name | sub("^v"; "")' || true
         fi
         rm -rf "$tmp_dir"
@@ -294,7 +294,7 @@ main() {
         VERSION=$(get_latest_version)
     fi
 
-    RELEASE_URL="https://github.com/bradenmweight/maestro/releases/download/v${VERSION}"
+    RELEASE_URL="https://github.com/bradenriggins/maestro/releases/download/v${VERSION}"
     ARCHIVE_NAME="maestro_${VERSION}_${PLATFORM}_${ARCHITECTURE}${ARCHIVE_EXT}"
     BINARY_URL="${RELEASE_URL}/${ARCHIVE_NAME}"
     TMP_DIR=$(mktemp -d)

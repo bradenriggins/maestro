@@ -5,8 +5,8 @@ Thank you for considering contributing to Maestro. This document covers setup, c
 ## Development Setup
 
 1. Fork the repository
-2. Clone your fork: `git clone https://github.com/bradenmweight/maestro.git`
-3. Add the upstream remote: `git remote add upstream https://github.com/bradenmweight/maestro.git`
+2. Clone your fork: `git clone https://github.com/bradenriggins/maestro.git`
+3. Add the upstream remote: `git remote add upstream https://github.com/bradenriggins/maestro.git`
 4. Install dependencies: `go mod download`
 5. Build and run: `go build -o maestro . && ./maestro version`
 

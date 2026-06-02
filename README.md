@@ -1,8 +1,10 @@
 # Maestro
 
-Maestro is a Go TUI that orchestrates multiple Claude Code and Codex CLI instances across separate accounts — with usage-aware routing that reads real-time rate limit data and dispatches each task to the account with the most headroom.
+> Run multiple Claude Code and Codex CLI agents in parallel — across separate accounts — from a single terminal dashboard.
 
-![Maestro TUI](assets/screenshot.png)
+Maestro solves the rate-limit wall. When you're running several AI coding tasks at once, a single Anthropic or OpenAI account runs out of headroom fast. Maestro reads each account's real-time usage data, routes each task to the account with the most capacity, and manages all of it from one BubbleTea TUI. Workers get their own tmux sessions and git worktrees; the orchestrator sees everything.
+
+> Maestro is built on [Claude Squad](https://github.com/smtg-ai/claude-squad) (AGPL-3.0) and extends it with multi-account credential isolation, usage-aware routing, model-aware dispatch, and Codex CLI support. See [Attribution](#attribution) for details.
 
 ## Features
 
@@ -57,7 +59,7 @@ Prerequisites for local builds:
 **curl | bash (recommended):**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bradenmweight/maestro/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bradenriggins/maestro/main/install.sh | bash
 ```
 
 The installer detects your platform and architecture, downloads the correct binary, and adds it to `~/.local/bin`.
@@ -65,7 +67,7 @@ The installer detects your platform and architecture, downloads the correct bina
 **Build from source:**
 
 ```bash
-git clone https://github.com/bradenmweight/maestro.git
+git clone https://github.com/bradenriggins/maestro.git
 cd maestro
 go build -o maestro ./
 sudo mv maestro /usr/local/bin/
