@@ -208,6 +208,15 @@ This gives you real automation for logic and interaction flow, but subjective UX
 | `?` | Help |
 | `q` | Quit (saves session state for resume) |
 
+## Project status
+
+Maestro is pre-1.0. A recent audit fixed ~20 critical and high-priority bugs
+across routing, state reconciliation, session lifecycle, and the TUI — see
+[CHANGELOG.md](CHANGELOG.md) for the full list. Issues that were identified but
+intentionally deferred (with reasoning and suggested fixes) are tracked in
+[docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) — a good place to start if you want
+to contribute.
+
 ## Attribution
 
 Maestro is based on [Claude Squad](https://github.com/smtg-ai/claude-squad) by smtg-ai and is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0). Substantial modifications have been made, including multi-account credential management, usage tracking and routing, model-aware task dispatch, and Codex CLI integration.
