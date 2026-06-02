@@ -84,11 +84,11 @@ func UpdateDurationStats(task *Task) error {
 		return nil
 	}
 
-	dispatched, err := time.Parse(time.RFC3339, *task.DispatchedAt)
+	dispatched, err := ParseISO(*task.DispatchedAt)
 	if err != nil {
 		return nil // silently ignore malformed timestamps
 	}
-	completed, err := time.Parse(time.RFC3339, *task.CompletedAt)
+	completed, err := ParseISO(*task.CompletedAt)
 	if err != nil {
 		return nil
 	}

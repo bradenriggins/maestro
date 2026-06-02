@@ -1,6 +1,9 @@
 package orchestration
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 const MaxAttempts = 3
 
@@ -88,4 +91,18 @@ func (t *Task) IsTerminal() bool {
 
 func NowISO() string {
 	return time.Now().UTC().Format(time.RFC3339)
+}
+
+// ParseISO parses a timestamp written by either the Go side or the worker
+// protocol. time.Parse(time.RFC3339) is strict and rejects common near-valid
+// forms (fractional seconds, "+00:00" offset) an LLM-driven worker may emit
+// when it formats a timestamp itself; a parse failure silently strands tasks
+// in stale or skips staleness checks. Try the strict form, then tolerant ones.
+func ParseISO(s string) (time.Time, error) {
+	for _, layout := range []string{time.RFC3339, time.RFC3339Nano, "2006-01-02T15:04:05.999999999Z0700", "2006-01-02T15:04:05"} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unrecognized timestamp format: %q", s)
 }

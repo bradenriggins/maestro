@@ -3,6 +3,8 @@ package session
 import (
 	"errors"
 	"maestro/log"
+	"maestro/pkg/accounts"
+	"maestro/pkg/programs"
 	"maestro/session/git"
 	"maestro/session/tmux"
 	"path/filepath"
@@ -233,6 +235,33 @@ func (i *Instance) SetSelectedBranch(branch string) {
 	i.selectedBranch = branch
 }
 
+// resolveEnv returns the environment variables to inject into the tmux session.
+// Conductor (multi-account) instances MUST inject their account's config dir so
+// the worker runs against the right credentials. If Env was persisted, use it.
+// If it's empty but the instance has an account (e.g. a legacy instance, or one
+// whose Env didn't persist), reconstruct it from the account — otherwise the
+// recreate path falls back to Start() with no -e and the pane silently inherits
+// the launching shell's CLAUDE_CONFIG_DIR/CODEX_HOME, bleeding one account's
+// credentials into another's session.
+func (i *Instance) resolveEnv() map[string]string {
+	if len(i.Env) > 0 {
+		return i.Env
+	}
+	if i.Account == "" {
+		return nil
+	}
+	spec, found := programs.GetByBinary(i.Program)
+	if !found || spec.ConfigDirEnvVar == "" {
+		return nil
+	}
+	configDir, err := accounts.AccountConfigDir(i.Account)
+	if err != nil {
+		log.ErrorLog.Printf("resolveEnv: could not resolve config dir for account %q: %v", i.Account, err)
+		return nil
+	}
+	return map[string]string{spec.ConfigDirEnvVar: configDir}
+}
+
 // firstTimeSetup is true if this is a new instance. Otherwise, it's one loaded from storage.
 func (i *Instance) Start(firstTimeSetup bool) error {
 	if i.Title == "" {
@@ -286,8 +315,8 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 		if err := tmuxSession.Restore(); err != nil {
 			log.ErrorLog.Printf("failed to restore existing session %q: %v — attempting to create new session", i.Title, err)
 			var startErr error
-			if len(i.Env) > 0 {
-				startErr = i.tmuxSession.StartWithEnv(i.gitWorktree.GetWorktreePath(), i.Env)
+			if env := i.resolveEnv(); len(env) > 0 {
+				startErr = i.tmuxSession.StartWithEnv(i.gitWorktree.GetWorktreePath(), env)
 			} else {
 				startErr = i.tmuxSession.Start(i.gitWorktree.GetWorktreePath())
 			}
@@ -307,8 +336,8 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 
 		// Create new session
 		var startErr error
-		if len(i.Env) > 0 {
-			startErr = i.tmuxSession.StartWithEnv(i.gitWorktree.GetWorktreePath(), i.Env)
+		if env := i.resolveEnv(); len(env) > 0 {
+			startErr = i.tmuxSession.StartWithEnv(i.gitWorktree.GetWorktreePath(), env)
 		} else {
 			startErr = i.tmuxSession.Start(i.gitWorktree.GetWorktreePath())
 		}
@@ -465,6 +494,15 @@ func (i *Instance) TmuxAlive() bool {
 	return i.tmuxSession.DoesSessionExist()
 }
 
+// IsAttached reports whether the user is currently attached to this instance's
+// tmux session. Used to suppress autoYes Enter injection while attached.
+func (i *Instance) IsAttached() bool {
+	if i.tmuxSession == nil {
+		return false
+	}
+	return i.tmuxSession.IsAttached()
+}
+
 // Pause stops the tmux session and removes the worktree, preserving the branch
 func (i *Instance) Pause() error {
 	if !i.started {
@@ -566,8 +604,8 @@ func (i *Instance) Resume() error {
 	} else {
 		// Create new tmux session
 		var startErr error
-		if len(i.Env) > 0 {
-			startErr = i.tmuxSession.StartWithEnv(i.gitWorktree.GetWorktreePath(), i.Env)
+		if env := i.resolveEnv(); len(env) > 0 {
+			startErr = i.tmuxSession.StartWithEnv(i.gitWorktree.GetWorktreePath(), env)
 		} else {
 			startErr = i.tmuxSession.Start(i.gitWorktree.GetWorktreePath())
 		}

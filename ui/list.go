@@ -310,10 +310,6 @@ func (l *List) Kill() {
 func (l *List) RemoveByName(name string) {
 	for i, item := range l.items {
 		if item.Title == name {
-			// Select the previous item if we're removing the last one.
-			if i == len(l.items)-1 {
-				defer l.Up()
-			}
 			// Unregister the reponame.
 			repoName, err := item.RepoName()
 			if err != nil {
@@ -322,6 +318,18 @@ func (l *List) RemoveByName(name string) {
 				l.rmRepo(repoName)
 			}
 			l.items = append(l.items[:i], l.items[i+1:]...)
+			// Keep selectedIdx pointing at a valid item. Removing an item
+			// before the selection shifts everything down by one, so the
+			// selection must follow; then clamp to the new bounds.
+			if i < l.selectedIdx {
+				l.selectedIdx--
+			}
+			if l.selectedIdx >= len(l.items) {
+				l.selectedIdx = len(l.items) - 1
+			}
+			if l.selectedIdx < 0 {
+				l.selectedIdx = 0
+			}
 			return
 		}
 	}
@@ -387,6 +395,15 @@ func (l *List) AddInstance(instance *session.Instance) (finalize func()) {
 func (l *List) GetSelectedInstance() *session.Instance {
 	if len(l.items) == 0 {
 		return nil
+	}
+	// Defensive clamp: callers fire this constantly (every render/tick), and a
+	// momentarily stale selectedIdx (e.g. after an async removal) must never
+	// index out of range and panic the TUI.
+	if l.selectedIdx >= len(l.items) {
+		l.selectedIdx = len(l.items) - 1
+	}
+	if l.selectedIdx < 0 {
+		l.selectedIdx = 0
 	}
 	return l.items[l.selectedIdx]
 }

@@ -189,7 +189,7 @@ func truncate(s string, maxLen int) string {
 // timeSince parses an ISO timestamp and returns a human-readable duration.
 // Formats: "Xs" for under a minute, "Xm Ys" for under an hour, "Xh Ym" for an hour or more.
 func timeSince(isoTimestamp string) string {
-	t, err := time.Parse(time.RFC3339, isoTimestamp)
+	t, err := ParseISO(isoTimestamp)
 	if err != nil {
 		return "?"
 	}
@@ -249,7 +249,7 @@ func annotateStall(state string, lastOutputAt string) string {
 	if state != StateWorking || lastOutputAt == "" {
 		return state
 	}
-	if lastOut, parseErr := time.Parse(time.RFC3339, lastOutputAt); parseErr == nil {
+	if lastOut, parseErr := ParseISO(lastOutputAt); parseErr == nil {
 		if time.Since(lastOut) > DefaultStallThreshold {
 			return fmt.Sprintf("%s (stalled %s)", state, timeSince(lastOutputAt))
 		}

@@ -216,6 +216,20 @@ func LoadConfig() *Config {
 		return DefaultConfig()
 	}
 
+	// Backfill defaults for fields missing from an existing config file
+	// (older or hand-edited configs). Unmarshalling never applies the
+	// missing-file defaults, so a config that omits these would otherwise
+	// carry zero values — e.g. DaemonPollInterval == 0 panics time.NewTicker.
+	if config.DaemonPollInterval <= 0 {
+		config.DaemonPollInterval = 1000
+	}
+	if config.DefaultProgram == "" {
+		config.DefaultProgram = DefaultConfig().DefaultProgram
+	}
+	if config.BranchPrefix == "" {
+		config.BranchPrefix = DefaultConfig().BranchPrefix
+	}
+
 	return &config
 }
 

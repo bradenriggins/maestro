@@ -151,6 +151,25 @@ func (s *TaskStore) Update(task *Task) error {
 	return nil
 }
 
+// UpdateIfStatus re-reads the task from disk and applies mutate + write only if
+// its current on-disk status equals expected. It returns the status observed on
+// re-read. The task file is written concurrently by a separate worker process
+// with no lock, so blindly writing a stale in-memory copy can clobber a status
+// the worker just wrote (e.g. reverting in_progress back to dispatched). This
+// narrows that lost-update window for callers that only want to bump a field
+// while the task is in a known state.
+func (s *TaskStore) UpdateIfStatus(id, expected string, mutate func(*Task)) (string, error) {
+	cur, err := s.Get(id)
+	if err != nil {
+		return "", err
+	}
+	if cur.Status != expected {
+		return cur.Status, nil
+	}
+	mutate(cur)
+	return cur.Status, s.Update(cur)
+}
+
 // List returns all tasks in the tasks directory. If statusFilter is non-empty,
 // only tasks whose Status matches are returned.
 func (s *TaskStore) List(statusFilter string) ([]*Task, error) {

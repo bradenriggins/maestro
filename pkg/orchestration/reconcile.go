@@ -64,15 +64,23 @@ func Reconcile(tmux TmuxChecker, registryPath string, store *TaskStore) (*Reconc
 			if tasksErr == nil {
 				for _, task := range tasks {
 					if task.Status == StatusInProgress {
-						task.Status = StatusStale
-						task.UpdatedAt = NowISO()
-						errMsg := "Worker tmux session died during execution"
-						task.Error = &errMsg
-						if err := store.Update(task); err != nil {
-							log.WarningLog.Printf("reconcile: failed to mark task %s as stale: %v", task.ID, err)
+						// Re-read immediately before writing: the worker process
+						// writes the same file concurrently, and our `tasks`
+						// snapshot is up to ~5s old. Without this, a task the
+						// worker just completed gets clobbered back to stale
+						// (and later failed), silently discarding the result.
+						fresh, getErr := store.Get(task.ID)
+						if getErr != nil || fresh.Status != StatusInProgress {
 							continue
 						}
-						result.StaleTasks = append(result.StaleTasks, task.ID)
+						fresh.Status = StatusStale
+						errMsg := "Worker tmux session died during execution"
+						fresh.Error = &errMsg
+						if err := store.Update(fresh); err != nil {
+							log.WarningLog.Printf("reconcile: failed to mark task %s as stale: %v", fresh.ID, err)
+							continue
+						}
+						result.StaleTasks = append(result.StaleTasks, fresh.ID)
 					}
 				}
 			}
@@ -84,16 +92,26 @@ func Reconcile(tmux TmuxChecker, registryPath string, store *TaskStore) (*Reconc
 			if err == nil && ws.State == StateWorking {
 				if ws.LastTask != "" {
 					lastTask, taskErr := store.Get(ws.LastTask)
-					if taskErr == nil && (lastTask.Status == StatusCompleted || lastTask.Status == StatusFailed || lastTask.Status == StatusTimedOut) {
-						// Worker finished but forgot to update status file
-						ws.State = StateIdle
-						ws.Timestamp = NowISO()
-						statusPath := store.StatusFilePath(name)
-						if writeErr := AtomicWriteJSON(statusPath, ws); writeErr != nil {
-							// Log but don't fail the whole reconciliation; fall through to block 3
-							log.WarningLog.Printf("reconcile: failed to correct status file for %s: %v", name, writeErr)
+					if taskErr == nil && lastTask.IsTerminal() {
+						// Worker finished but forgot to update status file. Re-read
+						// the status immediately before correcting it: the worker
+						// may have already moved on to a new task (its own write
+						// would be clobbered, and we'd flip a genuinely-working
+						// worker to idle → a second task gets double-dispatched
+						// on top of the first).
+						cur, curErr := store.ReadStatus(name)
+						if curErr != nil || cur.State != StateWorking || cur.LastTask != ws.LastTask {
+							// Worker changed its status since our read; leave it alone.
 						} else {
-							result.StatusCorrected = append(result.StatusCorrected, name)
+							cur.State = StateIdle
+							cur.Timestamp = NowISO()
+							statusPath := store.StatusFilePath(name)
+							if writeErr := AtomicWriteJSON(statusPath, cur); writeErr != nil {
+								// Log but don't fail the whole reconciliation; fall through to block 3
+								log.WarningLog.Printf("reconcile: failed to correct status file for %s: %v", name, writeErr)
+							} else {
+								result.StatusCorrected = append(result.StatusCorrected, name)
+							}
 						}
 					}
 				}
@@ -107,18 +125,24 @@ func Reconcile(tmux TmuxChecker, registryPath string, store *TaskStore) (*Reconc
 		if tasksErr == nil {
 			for _, task := range tasks {
 				if task.Status == StatusStale {
-					updatedAt, parseErr := time.Parse(time.RFC3339, task.UpdatedAt)
+					updatedAt, parseErr := ParseISO(task.UpdatedAt)
 					if parseErr != nil {
 						log.WarningLog.Printf("reconcile: task %s has unparseable UpdatedAt %q, skipping stale promotion: %v", task.ID, task.UpdatedAt, parseErr)
 						continue
 					}
 					if time.Since(updatedAt) > DefaultStallThreshold {
-						task.Status = StatusFailed
-						if err := store.Update(task); err != nil {
-							log.WarningLog.Printf("reconcile: failed to promote task %s to failed: %v", task.ID, err)
+						// Re-read before promoting: the task may have been
+						// redispatched (stale→dispatched) since our snapshot.
+						fresh, getErr := store.Get(task.ID)
+						if getErr != nil || fresh.Status != StatusStale {
 							continue
 						}
-						result.FailedTasks = append(result.FailedTasks, task.ID)
+						fresh.Status = StatusFailed
+						if err := store.Update(fresh); err != nil {
+							log.WarningLog.Printf("reconcile: failed to promote task %s to failed: %v", fresh.ID, err)
+							continue
+						}
+						result.FailedTasks = append(result.FailedTasks, fresh.ID)
 					}
 				}
 			}

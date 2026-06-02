@@ -190,13 +190,20 @@ func CleanupWorktrees(repoPath string) error {
 		return fmt.Errorf("failed to list worktrees: %w", err)
 	}
 
-	// Parse the output to extract branch names
+	// Parse the output to extract branch names AND the set of worktree paths
+	// that actually belong to THIS repo. The worktrees dir (~/.maestro/worktrees)
+	// is GLOBAL across every repo maestro has touched, so we must never act on an
+	// entry owned by a different repo — git's remove would fail and the
+	// os.RemoveAll fallback would then destroy that other repo's worktree
+	// (uncommitted work included) and corrupt its .git/worktrees registration.
 	worktreeBranches := make(map[string]string)
+	ownedBaseNames := make(map[string]bool)
 	currentWorktree := ""
 	lines := strings.Split(string(output), "\n")
 	for _, line := range lines {
 		if strings.HasPrefix(line, "worktree ") {
 			currentWorktree = strings.TrimPrefix(line, "worktree ")
+			ownedBaseNames[filepath.Base(currentWorktree)] = true
 		} else if strings.HasPrefix(line, "branch ") {
 			branchPath := strings.TrimPrefix(line, "branch ")
 			// Extract branch name from refs/heads/branch-name
@@ -209,6 +216,13 @@ func CleanupWorktrees(repoPath string) error {
 
 	for _, entry := range entries {
 		if entry.IsDir() {
+			// Skip worktrees that don't belong to this repo. Dir names are
+			// globally unique (nanotime-suffixed), so a base-name match is a
+			// safe ownership check — without it we would force-delete another
+			// repo's worktree.
+			if !ownedBaseNames[entry.Name()] {
+				continue
+			}
 			worktreePath := filepath.Join(worktreesDir, entry.Name())
 
 			// Remove the worktree via git so that its internal registration is

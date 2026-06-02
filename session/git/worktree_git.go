@@ -91,25 +91,16 @@ func (g *GitWorktree) PushChanges(commitMessage string, open bool) error {
 		}
 	}
 
-	// First push the branch to remote to ensure it exists
-	pushCmd := exec.Command("gh", "repo", "sync", "--source", "-b", g.branchName)
-	pushCmd.Dir = g.worktreePath
-	if err := pushCmd.Run(); err != nil {
-		// If sync fails, try creating the branch on remote first
-		gitPushCmd := exec.Command("git", "push", "-u", "origin", g.branchName)
-		gitPushCmd.Dir = g.worktreePath
-		if pushOutput, pushErr := gitPushCmd.CombinedOutput(); pushErr != nil {
-			log.ErrorLog.Print(pushErr)
-			return fmt.Errorf("failed to push branch: %s (%w)", pushOutput, pushErr)
-		}
-	}
-
-	// Now sync with remote
-	syncCmd := exec.Command("gh", "repo", "sync", "-b", g.branchName)
-	syncCmd.Dir = g.worktreePath
-	if output, err := syncCmd.CombinedOutput(); err != nil {
-		log.ErrorLog.Print(err)
-		return fmt.Errorf("failed to sync changes: %s (%w)", output, err)
+	// Push the worktree's branch to origin. (Earlier versions used
+	// `gh repo sync`, which syncs a fork *from* upstream and does not push
+	// local commits — `--source -b <branch>` is also a malformed invocation,
+	// and the trailing `gh repo sync -b <branch>` pulled the default branch
+	// back over the feature branch. A plain `git push` is the real operation.)
+	gitPushCmd := exec.Command("git", "push", "-u", "origin", g.branchName)
+	gitPushCmd.Dir = g.worktreePath
+	if pushOutput, pushErr := gitPushCmd.CombinedOutput(); pushErr != nil {
+		log.ErrorLog.Print(pushErr)
+		return fmt.Errorf("failed to push branch: %s (%w)", pushOutput, pushErr)
 	}
 
 	// Open the branch in the browser

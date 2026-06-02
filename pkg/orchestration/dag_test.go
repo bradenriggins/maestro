@@ -41,7 +41,10 @@ func TestDAGPass_AllDepsComplete_TaskDispatched(t *testing.T) {
 	task, err := store.Get("pending-task")
 	require.NoError(t, err)
 	assert.Equal(t, StatusDispatched, task.Status)
-	assert.Equal(t, 1, task.Attempts)
+	// Attempts is NOT incremented by the DAG pass itself — it is only bumped
+	// once the worker accepts delivery (SendDAGDispatchedTasks). This prevents
+	// a busy worker that defers delivery from churning the attempt counter.
+	assert.Equal(t, 0, task.Attempts)
 }
 
 func TestDAGPass_OneDepFailed_TaskBlocked(t *testing.T) {

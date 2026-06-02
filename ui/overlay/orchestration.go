@@ -510,7 +510,15 @@ func (o *OrchestrationOverlay) Render(opts ...WhitespaceOption) string {
 			b.WriteString(dimStyle.Render("  (no workers)"))
 			b.WriteString("\n")
 		}
-		for name, entry := range workers {
+		// Iterate in a stable order — ranging a map directly reshuffles the
+		// worker table on every redraw, making it flicker.
+		workerNames := make([]string, 0, len(workers))
+		for name := range workers {
+			workerNames = append(workerNames, name)
+		}
+		sort.Strings(workerNames)
+		for _, name := range workerNames {
+			entry := workers[name]
 			state := "unknown"
 			taskInfo := ""
 			if o.cached.workerStatuses != nil {

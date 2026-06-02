@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"maestro/config"
 	"maestro/log"
+	"maestro/pkg/accounts"
+	"maestro/pkg/orchestration"
 	"maestro/session"
 	"os"
 	"os/exec"
@@ -13,6 +15,41 @@ import (
 	"syscall"
 	"time"
 )
+
+// runConductorReconcile runs one reconciliation + DAG pass against the conductor
+// registry, then delivers any newly-dispatched dependency tasks. Without this,
+// `maestro dispatch ... --after <dep>` only advances while the interactive TUI is
+// open; a CLI-only user would have dependent tasks stranded in `pending` forever
+// after their deps complete. The daemon and TUI never run at the same time, so
+// this won't contend with the TUI's own reconcile/registry writes.
+func runConductorReconcile() {
+	base, err := accounts.ConductorDir()
+	if err != nil {
+		return
+	}
+	regPath := filepath.Join(base, "registry.json")
+	if _, statErr := os.Stat(regPath); statErr != nil {
+		return // no conductor registry — nothing to reconcile
+	}
+	store, err := orchestration.NewTaskStore()
+	if err != nil {
+		log.WarningLog.Printf("daemon reconcile: task store: %v", err)
+		return
+	}
+	result, reg, err := orchestration.Reconcile(orchestration.RealTmuxChecker{}, regPath, store)
+	if err != nil {
+		log.WarningLog.Printf("daemon reconcile: %v", err)
+		return
+	}
+	if reg != nil {
+		if writeErr := orchestration.AtomicWriteJSON(regPath, reg); writeErr != nil {
+			log.WarningLog.Printf("daemon reconcile: write registry: %v", writeErr)
+		}
+	}
+	if result != nil && len(result.DAGDispatched) > 0 && reg != nil {
+		orchestration.SendDAGDispatchedTasks(result.DAGDispatched, store, reg)
+	}
+}
 
 // RunDaemon runs the daemon process which iterates over all sessions and runs AutoYes mode on them.
 // The main process is expected to stop the daemon on startup.
@@ -34,6 +71,10 @@ func RunDaemon(cfg *config.Config) error {
 	}
 
 	pollInterval := time.Duration(cfg.DaemonPollInterval) * time.Millisecond
+	if pollInterval <= 0 {
+		// Defensive: a zero/negative interval panics time.NewTicker below.
+		pollInterval = time.Second
+	}
 
 	// If we get an error for a session, it's likely that we'll keep getting the error. Log every 60 seconds.
 	everyN := log.NewEvery(60 * time.Second)
@@ -59,6 +100,10 @@ func RunDaemon(cfg *config.Config) error {
 					}
 				}
 			}
+
+			// Advance conductor dependency chains headlessly so `--after`
+			// tasks don't stall when no TUI is running.
+			runConductorReconcile()
 
 			// Wait for the next poll interval or a stop signal.
 			select {

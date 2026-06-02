@@ -70,12 +70,18 @@ func handlePendingTask(store *TaskStore, task *Task, result *DAGPassResult) {
 		return // still waiting on deps
 	}
 
-	// All deps completed -> dispatch this task
+	// All deps completed -> queue this task for dispatch. Attempts/DispatchedAt
+	// are NOT bumped here — they're stamped in SendDAGDispatchedTasks only after
+	// the worker actually accepts delivery. Otherwise a busy worker that defers
+	// delivery would churn the attempt counter up/down on every pass and leave a
+	// bogus DispatchedAt that corrupts duration math.
+	if task.Attempts >= MaxAttempts {
+		blockTask(store, task, fmt.Sprintf("max attempts (%d) reached", MaxAttempts))
+		result.Blocked = append(result.Blocked, task.ID)
+		return
+	}
 	task.Status = StatusDispatched
-	task.Attempts++
 	task.Error = nil
-	now := NowISO()
-	task.DispatchedAt = &now
 	if err := store.Update(task); err != nil {
 		log.WarningLog.Printf("dag: failed to dispatch task %s: %v", task.ID, err)
 		return
@@ -163,18 +169,26 @@ func SendDAGDispatchedTasks(taskIDs []string, store *TaskStore, reg *Registry) {
 		}
 		instruction := fmt.Sprintf("Read and execute task: %s", task.PromptFile)
 		if err := tmuxSendKeys(entry.TmuxSession, instruction); err != nil {
-			log.WarningLog.Printf("dag send: failed to send task %s to tmux %q: %v", taskID, entry.TmuxSession, err)
+			log.WarningLog.Printf("dag send: failed to send task %s to tmux %q: %v — reverting to pending", taskID, entry.TmuxSession, err)
+			revertToPending(store, task)
+			continue
+		}
+		// Delivery succeeded: now record the attempt and dispatch time.
+		task.Attempts++
+		now := NowISO()
+		task.DispatchedAt = &now
+		if err := store.Update(task); err != nil {
+			log.WarningLog.Printf("dag send: failed to record dispatch of task %s: %v", taskID, err)
 		}
 	}
 }
 
-// revertToPending moves a dispatched task back to pending so the next DAG pass can retry.
+// revertToPending moves a dispatched task back to pending so the next DAG pass
+// can retry delivery. It does NOT touch Attempts — the counter is only bumped
+// once delivery actually succeeds (see SendDAGDispatchedTasks), so reverting an
+// undelivered task must leave it unchanged.
 func revertToPending(store *TaskStore, task *Task) {
 	task.Status = StatusPending
-	task.Attempts--
-	if task.Attempts < 0 {
-		task.Attempts = 0
-	}
 	if err := store.Update(task); err != nil {
 		log.WarningLog.Printf("dag send: failed to revert task %s to pending: %v", task.ID, err)
 	}

@@ -170,9 +170,10 @@ func RunScheduledDispatch(ctx context.Context, instanceName, taskPrompt, redispa
 	}
 
 	if schedule.Worker.Immediate {
-		fmt.Printf("Dispatching immediately to %q (usage: %.1f%%)\n",
-			schedule.Worker.AccountName, schedule.Worker.UsagePercent)
-		return RunDispatch(instanceName, taskPrompt, redispatchTaskID, nil)
+		target := resolveScheduledInstance(schedule.Worker.AccountName, instanceName)
+		fmt.Printf("Dispatching immediately to %q [account %q] (usage: %.1f%%)\n",
+			target, schedule.Worker.AccountName, schedule.Worker.UsagePercent)
+		return RunDispatch(target, taskPrompt, redispatchTaskID, nil)
 	}
 
 	// Wait for the worker's rate-limit window to reset
@@ -187,13 +188,46 @@ func RunScheduledDispatch(ctx context.Context, instanceName, taskPrompt, redispa
 
 	select {
 	case <-timer.C:
-		// Re-collect usage after waiting to confirm the worker is ready
-		fmt.Printf("Wait complete. Re-checking usage and dispatching to %q...\n",
-			schedule.Worker.AccountName)
-		return RunDispatch(instanceName, taskPrompt, redispatchTaskID, nil)
+		// Re-collect usage and recompute the schedule — the pre-wait estimate
+		// can be stale (clock skew, or another process used the account during
+		// the wait), so dispatching blind here risks hitting a still-saturated
+		// worker after a long wait.
+		fmt.Printf("Wait complete. Re-checking usage...\n")
+		if report2, err := CollectUsage(cfg); err == nil {
+			if rescheduled := ComputeSchedule(report2.Accounts, taskDuration, time.Now()); !rescheduled.NoRouteFound {
+				schedule = rescheduled
+			}
+		}
+		target := resolveScheduledInstance(schedule.Worker.AccountName, instanceName)
+		fmt.Printf("Dispatching to %q [account %q] (usage: %.1f%%)\n",
+			target, schedule.Worker.AccountName, schedule.Worker.UsagePercent)
+		return RunDispatch(target, taskPrompt, redispatchTaskID, nil)
 	case <-ctx.Done():
 		return nil, fmt.Errorf("scheduling canceled: %w", ctx.Err())
 	}
+}
+
+// resolveScheduledInstance maps a scheduler-chosen account back to a worker
+// instance name. The scheduler routes by account, but RunDispatch targets an
+// instance; without this resolution the routing decision is silently discarded
+// and the task always lands on the originally-named instance. Falls back to the
+// requested instance if no live worker backs the chosen account.
+func resolveScheduledInstance(accountName, fallbackInstance string) string {
+	reg, err := LoadRegistry()
+	if err != nil {
+		return fallbackInstance
+	}
+	var matches []string
+	for name, entry := range reg.ListWorkers() {
+		if entry.Account == accountName && entry.Status != RegistryStatusDead {
+			matches = append(matches, name)
+		}
+	}
+	if len(matches) == 0 {
+		return fallbackInstance
+	}
+	sort.Strings(matches) // deterministic when several instances back one account
+	return matches[0]
 }
 
 // ResolveTaskDuration determines the task duration from a flag, historical stats, or the default.

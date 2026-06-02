@@ -367,3 +367,37 @@ func TestAverageFor_HasData(t *testing.T) {
 func ptrStr(s string) *string {
 	return &s
 }
+
+// TestResolveScheduledInstance verifies the routing fix: the scheduler chooses
+// an account, and dispatch must be sent to the worker instance backing that
+// account (not the originally-named instance). Regression for the bug where
+// --schedule discarded the routing decision entirely.
+func TestResolveScheduledInstance(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	reg := Registry{
+		UpdatedAt: NowISO(),
+		Instances: map[string]RegistryEntry{
+			"orch-1":   {Account: "alice", Role: "orchestrator", Status: RegistryStatusRunning},
+			"worker-1": {Account: "bob", Role: "worker", Status: RegistryStatusRunning},
+			"worker-2": {Account: "carol", Role: "worker", Status: RegistryStatusRunning},
+			"worker-3": {Account: "dave", Role: "worker", Status: RegistryStatusDead},
+		},
+	}
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".maestro"), 0700))
+	require.NoError(t, AtomicWriteJSON(filepath.Join(home, ".maestro", "registry.json"), reg))
+
+	// A chosen account resolves to the worker instance backing it.
+	assert.Equal(t, "worker-2", resolveScheduledInstance("carol", "fallback"))
+	assert.Equal(t, "worker-1", resolveScheduledInstance("bob", "fallback"))
+
+	// An orchestrator account is not a worker target → fall back.
+	assert.Equal(t, "fallback", resolveScheduledInstance("alice", "fallback"))
+
+	// A dead worker's account is skipped → fall back.
+	assert.Equal(t, "fallback", resolveScheduledInstance("dave", "fallback"))
+
+	// An unknown account → fall back to the originally-requested instance.
+	assert.Equal(t, "fallback", resolveScheduledInstance("nobody", "fallback"))
+}

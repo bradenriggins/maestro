@@ -207,13 +207,20 @@ func RunDispatch(instanceName string, taskPrompt string, redispatchTaskID string
 		sendTask, getErr := store.Get(taskID)
 		if getErr != nil {
 			log.ErrorLog.Printf("dispatch: failed to read task %s for SendAttempts update: %v", taskID, getErr)
+		} else if sendTask.Status == StatusInProgress {
+			return &DispatchResult{TaskID: taskID, InstanceName: instanceName}, nil
 		} else {
-			if sendTask.Status == StatusInProgress {
-				return &DispatchResult{TaskID: taskID, InstanceName: instanceName}, nil
-			}
-			sendTask.SendAttempts++
-			if updateErr := store.Update(sendTask); updateErr != nil {
+			// Bump SendAttempts only while the task is still dispatched, via a
+			// re-read-then-write, so we don't clobber an in_progress status the
+			// worker writes concurrently (which would make pollForAck miss the
+			// ack and falsely time the task out).
+			newStatus, updateErr := store.UpdateIfStatus(taskID, StatusDispatched, func(t *Task) {
+				t.SendAttempts++
+			})
+			if updateErr != nil {
 				log.ErrorLog.Printf("dispatch: failed to persist SendAttempts for task %s: %v", taskID, updateErr)
+			} else if newStatus == StatusInProgress {
+				return &DispatchResult{TaskID: taskID, InstanceName: instanceName}, nil
 			}
 		}
 
@@ -263,7 +270,7 @@ func isWorkerReady(store *TaskStore, instanceName string, _ string) (bool, error
 		}
 		// Check staleness: if the idle status is old, verify via task state
 		if ws.Timestamp != "" {
-			if t, parseErr := time.Parse(time.RFC3339, ws.Timestamp); parseErr == nil {
+			if t, parseErr := ParseISO(ws.Timestamp); parseErr == nil {
 				if time.Since(t) > 10*time.Minute {
 					// Status file is stale — fall through to task-based check
 					tasks, tasksErr := store.ForInstance(instanceName)

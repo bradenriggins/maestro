@@ -155,6 +155,10 @@ func (t *TmuxSession) start(workDir string, extraArgs []string) error {
 		select {
 		case <-timeout:
 			timeoutErr := fmt.Errorf("timed out waiting for tmux session %s to appear", t.sanitizedName)
+			// Close the local PTY from ptyFactory.Start above — t.Close()
+			// only closes t.ptmx, which Restore() hasn't assigned yet, so
+			// without this the fd and its tmux client process leak.
+			_ = ptmx.Close()
 			if cleanupErr := t.Close(); cleanupErr != nil {
 				timeoutErr = fmt.Errorf("%w (cleanup error: %v)", timeoutErr, cleanupErr)
 			}
@@ -275,8 +279,10 @@ func (t *TmuxSession) Restore() error {
 	}
 	t.ptmxMu.Lock()
 	t.ptmx = ptmx
-	t.ptmxMu.Unlock()
+	// monitor is guarded by ptmxMu too — HasUpdated() reads/mutates it from
+	// background metadata goroutines while Restore() reassigns it on detach.
 	t.monitor = newStatusMonitor()
+	t.ptmxMu.Unlock()
 	return nil
 }
 
@@ -342,14 +348,13 @@ func (t *TmuxSession) SendKeys(keys string) error {
 // HasUpdated checks if the tmux pane content has changed since the last tick. It also returns true if
 // the tmux pane has a prompt for aider or claude code.
 func (t *TmuxSession) HasUpdated() (updated bool, hasPrompt bool) {
-	if t.monitor == nil {
-		return false, false
-	}
-
+	// Snapshot ptmx and monitor together under the lock — Restore() reassigns
+	// both on detach, concurrently with this background call.
 	t.ptmxMu.RLock()
 	ptmx := t.ptmx
+	monitor := t.monitor
 	t.ptmxMu.RUnlock()
-	if ptmx == nil {
+	if monitor == nil || ptmx == nil {
 		return false, false
 	}
 
@@ -379,9 +384,9 @@ func (t *TmuxSession) HasUpdated() (updated bool, hasPrompt bool) {
 		}
 	}
 
-	h := t.monitor.hash(content)
-	if !bytes.Equal(h, t.monitor.prevOutputHash) {
-		t.monitor.prevOutputHash = h
+	h := monitor.hash(content)
+	if !bytes.Equal(h, monitor.prevOutputHash) {
+		monitor.prevOutputHash = h
 		return true, hasPrompt
 	}
 	return false, hasPrompt
@@ -405,6 +410,11 @@ func (t *TmuxSession) Attach() (chan struct{}, error) {
 	t.ptmxMu.RLock()
 	attachPtmx := t.ptmx
 	t.ptmxMu.RUnlock()
+	// Capture this attach's context so the stdin reader below can tell when a
+	// detach happened on another path (Pause/DetachSafely, io.Copy EOF) and
+	// stop reading — otherwise it leaks, stays blocked on os.Stdin, and steals
+	// keystrokes from the TUI and the next attach.
+	attachCtx := t.ctx
 	go func() {
 		defer t.wg.Done()
 		_, _ = io.Copy(os.Stdout, attachPtmx)
@@ -433,6 +443,12 @@ func (t *TmuxSession) Attach() (chan struct{}, error) {
 		buf := make([]byte, 32)
 		for {
 			nr, err := os.Stdin.Read(buf)
+			// If a detach happened on another path while we were blocked in
+			// Read, stop now so this goroutine doesn't outlive the attach and
+			// consume input meant for the TUI / the next attach.
+			if attachCtx.Err() != nil {
+				return
+			}
 			if err != nil {
 				if err == io.EOF {
 					break
@@ -468,6 +484,12 @@ func (t *TmuxSession) Attach() (chan struct{}, error) {
 
 	t.monitorWindowSize()
 	return t.attachCh, nil
+}
+
+// IsAttached reports whether a user is currently attached to this session.
+// Used to suppress autoYes keystroke injection while the user is interacting.
+func (t *TmuxSession) IsAttached() bool {
+	return t.attachCh != nil
 }
 
 // DetachSafely disconnects from the current tmux session without panicking
@@ -545,11 +567,10 @@ func (t *TmuxSession) Detach() {
 		msg := "Detach called with nil ptmx — session may have been concurrently detached"
 		log.ErrorLog.Println(msg)
 	} else if err := ptmxToClose.Close(); err != nil {
-		// This is a fatal error. We can't detach if we can't close the PTY. It's better to just panic and have the
-		// user re-invoke the program than to ruin their terminal pane.
-		msg := fmt.Sprintf("error closing attach pty session: %v", err)
-		log.ErrorLog.Println(msg)
-		panic(msg)
+		// Don't panic: a close failure on an already-detaching fd should not
+		// kill the whole TUI (which would drop the view of every other worker).
+		// ptmx is already nil'd above; log and proceed.
+		log.ErrorLog.Printf("error closing attach pty session: %v", err)
 	}
 
 	// Step 2: Cancel goroutines created by Attach and wait for them to fully
@@ -561,10 +582,12 @@ func (t *TmuxSession) Detach() {
 	// Step 3: Attach goroutines have exited; safe to create a fresh PTY
 	// attachment to the background session.
 	if err := t.Restore(); err != nil {
-		// This is a fatal error. Our invariant that a started TmuxSession always has a valid ptmx is violated.
-		msg := fmt.Sprintf("error restoring tmux session after detach: %v", err)
-		log.ErrorLog.Println(msg)
-		panic(msg)
+		// Restore fails when the tmux session/server died while we were
+		// attached (worker exited, reboot, tmux kill-server). That's a normal
+		// runtime condition, not a fatal invariant violation — panicking here
+		// crashes the entire TUI on a routine Ctrl-Q. Leave ptmx nil (every
+		// caller nil-guards it) and surface the error via logs instead.
+		log.ErrorLog.Printf("error restoring tmux session after detach (session likely gone): %v", err)
 	}
 }
 

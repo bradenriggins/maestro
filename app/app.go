@@ -533,7 +533,11 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.lastOutputChange[r.instance.Title] = time.Now()
 				}
 			} else if r.hasPrompt {
-				r.instance.TapEnter()
+				// Don't auto-press Enter into a session the user is actively
+				// attached to — it injects stray keystrokes into their input.
+				if !r.instance.IsAttached() {
+					r.instance.TapEnter()
+				}
 			} else {
 				r.instance.SetStatus(session.Ready)
 			}
@@ -936,6 +940,16 @@ func (m *home) updateRegistry() {
 		log.ErrorLog.Printf("updateRegistry: failed to get conductor dir: %v", err)
 		return
 	}
+	registryPath := filepath.Join(baseDir, "registry.json")
+
+	// Load the existing registry so we can preserve the death state the
+	// reconcile loop records. Rebuilding purely from the live UI list would
+	// erase DiedAt and silently flip a dead worker back to "running" on the
+	// next UI mutation — the two writers were fighting over registry.json.
+	var existing map[string]orchestration.RegistryEntry
+	if reg, loadErr := orchestration.LoadRegistryFromPath(registryPath); loadErr == nil && reg != nil {
+		existing = reg.Instances
+	}
 
 	instances := m.list.GetInstances()
 	entries := make(map[string]orchestration.RegistryEntry, len(instances))
@@ -957,6 +971,21 @@ func (m *home) updateRegistry() {
 			status = orchestration.RegistryStatusRunning
 		}
 
+		// Derive death from tmux reality so this writer agrees with reconcile
+		// instead of overwriting it. Only a *running* instance whose tmux
+		// session is gone is dead — paused and still-starting instances are
+		// expected to have no live session.
+		var diedAt *string
+		if status == orchestration.RegistryStatusRunning && !inst.TmuxAlive() {
+			status = orchestration.RegistryStatusDead
+			if prev, ok := existing[inst.Title]; ok && prev.DiedAt != nil {
+				diedAt = prev.DiedAt // keep the original time of death
+			} else {
+				now := orchestration.NowISO()
+				diedAt = &now
+			}
+		}
+
 		lastOutput := orchestration.NowISO()
 		if t, ok := m.lastOutputChange[inst.Title]; ok {
 			lastOutput = t.UTC().Format(time.RFC3339)
@@ -973,6 +1002,7 @@ func (m *home) updateRegistry() {
 			Status:       status,
 			CreatedAt:    inst.CreatedAt.Format(time.RFC3339),
 			LastOutputAt: lastOutput,
+			DiedAt:       diedAt,
 		}
 	}
 
@@ -981,7 +1011,6 @@ func (m *home) updateRegistry() {
 		UpdatedAt: orchestration.NowISO(),
 	}
 
-	registryPath := filepath.Join(baseDir, "registry.json")
 	if err := orchestration.AtomicWriteJSON(registryPath, registry); err != nil {
 		log.ErrorLog.Printf("updateRegistry: failed to write registry.json: %v", err)
 		return

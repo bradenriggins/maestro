@@ -142,6 +142,28 @@ func TestLoadConfig(t *testing.T) {
 		assert.NotEmpty(t, config.BranchPrefix)
 	})
 
+	t.Run("backfills missing daemon_poll_interval so the daemon doesn't panic", func(t *testing.T) {
+		// Regression: an existing config file that omits daemon_poll_interval
+		// unmarshalled to 0, which panics time.NewTicker(0) in the daemon and
+		// silently broke AutoYes. LoadConfig must backfill the default.
+		tempHome := t.TempDir()
+		configDir := filepath.Join(tempHome, ".maestro")
+		require.NoError(t, os.MkdirAll(configDir, 0755))
+		configPath := filepath.Join(configDir, ConfigFileName)
+		// Note: no daemon_poll_interval / default_program / branch_prefix.
+		require.NoError(t, os.WriteFile(configPath, []byte(`{"auto_yes": true}`), 0644))
+
+		originalHome := os.Getenv("HOME")
+		os.Setenv("HOME", tempHome)
+		defer os.Setenv("HOME", originalHome)
+
+		config := LoadConfig()
+		assert.True(t, config.AutoYes)
+		assert.Equal(t, 1000, config.DaemonPollInterval, "must be backfilled, not left 0")
+		assert.NotEmpty(t, config.DefaultProgram, "must be backfilled")
+		assert.NotEmpty(t, config.BranchPrefix, "must be backfilled")
+	})
+
 	t.Run("loads valid config file", func(t *testing.T) {
 		// Create a temporary config directory
 		tempHome := t.TempDir()

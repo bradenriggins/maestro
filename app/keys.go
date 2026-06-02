@@ -113,6 +113,21 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 				return m, m.handleError(fmt.Errorf("title cannot be empty"))
 			}
 
+			// Reject duplicate titles. The title drives both the tmux session
+			// name (maestro_<title>) and the git branch name, so a collision
+			// makes the second worker fail to start ("session already exists")
+			// or fight the first over its branch. The instance being named is
+			// always the last in the list; check it against the rest.
+			allInstances := m.list.GetInstances()
+			for idx, other := range allInstances {
+				if idx == len(allInstances)-1 {
+					continue
+				}
+				if other.Title == instance.Title {
+					return m, m.handleError(fmt.Errorf("an instance named %q already exists", instance.Title))
+				}
+			}
+
 			// If promptAfterName, show prompt+branch overlay before starting
 			if m.promptAfterName {
 				m.promptAfterName = false
