@@ -34,7 +34,7 @@ Maestro solves the rate-limit wall. When you're running several AI coding tasks 
 
 **Usage tracking:** During setup, each Claude Code account's `settings.json` gets a `statusLine` command that pipes rate limit data (five-hour and seven-day usage percentages) to a receiver script, which writes to `~/.maestro/usage/<account>.json`. Codex usage is tracked from session JSONL files.
 
-**Routing:** `maestro dispatch` (and the quick-dispatch palette in the TUI) call `CollectUsage`, rank accounts by available headroom, and select the best idle worker automatically.
+**Routing:** `maestro dispatch <worker> --schedule` calls `CollectUsage`, ranks accounts by available headroom, and dispatches to the worker backing the account with the most capacity — waiting for a rate-limit reset first if that's faster (bounded by `--max-wait`). Plain `maestro dispatch <worker>` targets the named worker directly; the TUI and `maestro status` also surface routing advice (which account currently has the most headroom).
 
 **Reconciliation:** The TUI reconciles state every 5 seconds — it checks that tmux sessions are alive, transitions stale in-progress tasks to failed if the worker is dead, and corrects status files when they diverge from actual task state.
 
